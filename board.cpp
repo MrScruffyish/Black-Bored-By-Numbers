@@ -116,7 +116,7 @@ struct MathBox { float w = 0, asc = 0, desc = 0; };
 
 float mAsc(int s) { return s * 0.75f; }
 float mDesc(int s) { return s * 0.22f; }
-int mScript(int s) { return max(8, (int)lround(s * 0.65f)); }
+int mScript(int s) { return max(8, (int)lround(s * 0.62f)); }
 int mFrac(int s) { return max(8, (int)lround(s * 0.72f)); }
 
 MathBox measureSeq(const MathSeq& v, int size);
@@ -148,8 +148,8 @@ MathBox measureAtom(const MathAtom& a, int size) {
     MathBox b = coreBox(a, size);
     if (!a.hasSub && !a.hasSup) return b;
     int s = mScript(size); float sw = 0;
-    if (a.hasSup) { MathBox u = measureSeq(a.sup, s); sw = max(sw, u.w); b.asc = max(b.asc, 0.44f * size + u.asc); }
-    if (a.hasSub) { MathBox u = measureSeq(a.sub, s); sw = max(sw, u.w); b.desc = max(b.desc, 0.24f * size + u.desc); }
+    if (a.hasSup) { MathBox u = measureSeq(a.sup, s); sw = max(sw, u.w); b.asc = max(b.asc, 0.45f * size + u.asc); }
+    if (a.hasSub) { MathBox u = measureSeq(a.sub, s); sw = max(sw, u.w); b.desc = max(b.desc, 0.36f * size + u.desc); }
     b.w += sw + size * 0.06f;
     return b;
 }
@@ -165,7 +165,7 @@ void emitSeq(Scene& sc, const MathSeq& v, float x, float baseline, int size) {
 }
 void emitAtom(Scene& sc, const MathAtom& a, float x, float baseline, int size) {
     MathBox core = coreBox(a, size);
-    auto put = [&](char32_t c, float gx, float gy, int s) { if (c) sc.glyphs(u32string(1, c), gx, gy, s, 2, 0); };
+    auto put = [&](char32_t c, float gx, float gy, int s) { if (c) sc.glyphs(u32string(1, c), gx, gy - asc(s), s, 2, 0); };
     switch (a.kind) {
         case MathAtom::CH: put(a.ch, x, baseline, size); break;
         case MathAtom::GROUP: emitSeq(sc, a.body, x, baseline, size); break;
@@ -201,8 +201,8 @@ void emitAtom(Scene& sc, const MathAtom& a, float x, float baseline, int size) {
     if (a.hasSub || a.hasSup) {
         int s = mScript(size);
         float sx = x + core.w + size * 0.06f;
-        if (a.hasSub) emitSeq(sc, a.sub, sx, baseline + 0.24f * size, s);
-        if (a.hasSup) emitSeq(sc, a.sup, sx, baseline - 0.44f * size, s);
+        if (a.hasSub) emitSeq(sc, a.sub, sx, baseline + 0.36f * size, s);
+        if (a.hasSup) emitSeq(sc, a.sup, sx, baseline - 0.45f * size, s);
     }
 }
 
@@ -639,19 +639,31 @@ void render(Scene& sc, FILE* out, long& frameNo, long totalFrames) {
 }
 
 int main(int argc, char** argv) {
-    string in, out, enc = "libx264"; double minutes = 0, speed = 1; bool dry = false;
+    string in, out, enc = "libx264", font = "/usr/share/fonts/truetype/msttcorefonts/cour.ttf";
+    bool fontGiven = false;
+    double minutes = 0, speed = 1; bool dry = false;
     for (int i = 1; i < argc; i++) {
         string a = argv[i];
         if (a == "-o") { if (++i == argc) die("-o requires an output file"); out = argv[i]; }
         else if (a == "--minutes") minutes = atof(argv[++i]);
         else if (a == "--speed") speed = atof(argv[++i]); else if (a == "--encoder") enc = argv[++i];
         else if (a == "--decimals") DECIMALS = atoi(argv[++i]); else if (a == "--dry") dry = true;
+        else if (a == "--font") { if (++i == argc) die("--font requires a path"); font = argv[i]; fontGiven = true; }
         else if (in.empty()) in = a;
         else if (out.empty()) out = a;
         else die("unexpected argument: " + a);
     }
-    if (in.empty() || out.empty()) die("usage: board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--encoder h264_nvenc] [--dry]");
-    if (FT_Init_FreeType(&ft) || FT_New_Face(ft, "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 0, &face)) die("font");
+    if (in.empty() || out.empty()) die("usage: board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--font PATH] [--encoder h264_nvenc] [--dry]");
+    if (FT_Init_FreeType(&ft)) die("freetype");
+    vector<string> fonts = {font};
+    if (!fontGiven)
+        for (const char* p : {"/usr/share/fonts/opentype/urw-base35/NimbusMonoPS-Regular.otf",
+                              "/usr/share/fonts/truetype/freefont/FreeMono.ttf",
+                              "/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf",
+                              "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"}) fonts.push_back(p);
+    bool loaded = false;
+    for (auto& p : fonts) if (!FT_New_Face(ft, p.c_str(), 0, &face)) { font = p; loaded = true; break; }
+    if (!loaded) die("cannot load font: " + font);
     CW = adv(BIG);
     ifstream f(in); if (!f) die("cannot open " + in);
     regex re(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:_(?:\{[^}]*\}|[A-Za-z0-9]))?)\s*=\s*)?([0-9 ,]*[0-9,])\s*(\+|-|\*|x|×|−|/|:|÷)\s*([0-9 ,]*[0-9,])\s*$)");

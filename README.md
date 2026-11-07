@@ -11,13 +11,19 @@ out to fit what was recently written.
 - FreeType 2 development headers (`pkg-config --cflags freetype2`)
 - `ffmpeg` (encoding)
 - `bc` (the results are cross-checked against `bc` while generating)
-- `DejaVuSansMono.ttf` (default: `/usr/share/fonts/truetype/dejavu/`)
+- `Courier New` (default: `/usr/share/fonts/truetype/msttcorefonts/cour.ttf`),
+  a fixed-width font with a plain zero. If Courier New is not installed, the
+  program falls back to Nimbus Mono PS, FreeMono, Noto Mono or DejaVu Sans Mono.
+  Use `--font PATH` to choose another fixed-width font.
 
 On Debian/Ubuntu:
 
 ```sh
-sudo apt install g++ libfreetype6-dev pkg-config ffmpeg bc fonts-dejavu-core
+sudo apt install g++ libfreetype6-dev pkg-config ffmpeg bc fonts-urw-base35
 ```
+
+Courier New comes from `ttf-mscorefonts-installer` (contrib). Without it the
+free fallback (Nimbus Mono PS) is used.
 
 ## Build
 
@@ -28,7 +34,7 @@ make
 ## Usage
 
 ```sh
-./board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--encoder h264_nvenc] [--dry]
+./board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--font PATH] [--encoder h264_nvenc] [--dry]
 ```
 
 Both the input file and the output file are required. The output may also be
