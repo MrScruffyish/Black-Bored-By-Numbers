@@ -11,7 +11,7 @@ using namespace std;
 const int W = 1280, H = 720, FPS = 30, BIG = 110, SMALL = 50, TITLE = 72;
 const float RH = 135, GAP = 28, INF = 1e30f;
 const unsigned char CHALK[3] = {238, 242, 236}, GREEN[3] = {34, 72, 50};
-int DECIMALS = 4;  // max quotient decimals in division (truncated, like bc)
+int DECIMALS = -1;  // optional cap on quotient decimals; -1 = only the significant-digit rule
 FT_Library ft; FT_Face face;
 
 [[noreturn]] void die(const string& m) { fprintf(stderr, "error: %s\n", m.c_str()); exit(1); }
@@ -118,6 +118,7 @@ Big subB(Big a, const Big& b) {
 }
 Big mulS(const Big& a, int q) { Big r; int c = 0; for (int x : a) { int v = x * q + c; r.push_back(v % 10); c = v / 10; } if (c) r.push_back(c); trim(r); return r; }
 bool isZero(const Big& a) { return a.size() == 1 && !a[0]; }
+int sigDigits(const Num& n) { Big t = n.d; trim(t); return t.size(); }  // digits ignoring leading zeros
 
 Num parse(string s) {
     Num n; s.erase(remove(s.begin(), s.end(), ' '), s.end());
@@ -283,15 +284,26 @@ Scene divide(const Num& a, const Num& b, const string& op, const string& name) {
     while ((int)A.d.size() > A.dec + 1 && !A.d.back()) A.d.pop_back();
     Num Dv{d, 0, ""};
     if (k) sc.titleEnd = sc.text(" = " + fmtNum(A) + " " + op + " " + fmtNum(Dv), sc.titleEnd, 30, TITLE, 30);
-    int nInt = A.d.size() - A.dec, Pq = max(DECIMALS, A.dec), nD = A.d.size();
+    int nInt = A.d.size() - A.dec, nD = A.d.size();
+    int N = max(sigDigits(a), sigDigits(b));  // max significant digits in the operands
+    int decCap = DECIMALS < 0 ? INT_MAX : DECIMALS;
     auto digit = [&](int c) { int i = nD - 1 - c; return i >= 0 ? A.d[i] : 0; };
     auto qdig = [&](Big& r) { int q = 9; while (cmp(mulS(d, q), r) > 0) q--; return q; };
     auto push10 = [&](Big& r, int dg) { r.insert(r.begin(), dg); trim(r); };
     int cEnd = 0;
-    { Big r{0}; for (;; cEnd++) {
+    { Big r{0}; int sig = 0;
+      for (;;) {
         int e = nInt - 1 - cEnd;
-        if (e < -Pq || (cEnd >= nD && e < 0 && isZero(r))) break;
-        push10(r, digit(cEnd)); r = subB(r, mulS(d, qdig(r))); } }
+        if (e < 0) {
+            if (-e > decCap || sig >= N) break;           // reached the digit budget
+            if (cEnd >= nD && isZero(r)) break;           // exact, nothing left to bring down
+        }
+        push10(r, digit(cEnd));
+        int q = qdig(r);
+        r = subB(r, mulS(d, q));
+        if (sig > 0 || q) sig++;                          // leading zeros do not count
+        cEnd++;
+      } }
     int nd = d.size(); float divW = nd * CW + ((nd - 1) / 3) * GAP, barX = 200 + divW + 25;
     Grid g = Grid::leftAt(barX + 30, nInt - 1); auto X = [&](int e) { return g.X(e); };
     Grid gd = Grid::leftAt(200, nd - 1);
@@ -315,7 +327,8 @@ Scene divide(const Num& a, const Num& b, const string& op, const string& name) {
         }
     }
     vector<int> res(qd.rbegin(), qd.rend());
-    finish(sc, res, cEnd - nInt, "scale=" + to_string(Pq) + "\n" + bcform(a) + " / " + bcform(b));
+    int dec = cEnd - nInt;
+    finish(sc, res, dec, "scale=" + to_string(dec) + "\n" + bcform(a) + " / " + bcform(b));
     return sc;
 }
 

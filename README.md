@@ -41,7 +41,11 @@ given with `-o out.mp4`. For example:
 - `--dry` parses the input and verifies the arithmetic without rendering.
 - `--speed` scales the animation speed (larger is faster).
 - `--minutes` instead targets a total video length.
-- `--decimals` sets the maximum number of quotient decimals in division (default 4).
+- `--decimals N` additionally caps the number of quotient decimals in division.
+  By default the quotient keeps at most `max(A, B)` significant digits, where
+  `A` and `B` are the digit counts of the operands (leading zeros excluded), so
+  `1 / 3` becomes `0,3` instead of running forever. Integer digits are always
+  kept in full.
 
 Input is one operation per line. Decimal comma and spaces as thousands
 separators are supported, as are `+ - * x × − / : ÷` and optional variable
