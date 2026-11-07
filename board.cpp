@@ -1,6 +1,7 @@
 // Chalk-on-blackboard column arithmetic -> mp4.  Handles huge (1000+ digit) operands:
-// the board is never rasterised as a whole; each frame draws only strokes visible to the camera,
-// and the camera zooms out to fit whatever was written during the last ~2 seconds.
+// the board is never rasterised as a whole; each frame draws only strokes visible to the camera.
+// By default the camera stays at the board origin and only zooms out, so the view never pans
+// back and forth; it fits everything written so far.  Large scenes are sped up automatically.
 // Build: g++ -O2 -std=c++17 board.cpp -o board $(pkg-config --cflags --libs freetype2)
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -9,9 +10,18 @@
 using namespace std;
 
 const int W = 1280, H = 720, FPS = 30, BIG = 110, SMALL = 50, TITLE = 72;
-const float RH = 135, GAP = 28, INF = 1e30f;
+const float RH = 135, GAP = 28, INF = 1e30f, CAM_MARGIN = 100;
 const unsigned char CHALK[3] = {238, 242, 236}, GREEN[3] = {34, 72, 50};
 int DECIMALS = -1;  // optional cap on quotient decimals; -1 = only the 2*max(A,B) rule
+
+// Camera: "fit" keeps the camera at the origin and only zooms out to fit all
+// strokes written so far.  "follow" is the old behaviour: pan to follow the
+// last ~2 seconds of activity.  Auto-speed shortens scenes whose final zoom is
+// large (i.e. very small writing), since their details are not readable anyway.
+enum CamMode { CAM_FIT, CAM_FOLLOW } CAMERA = CAM_FIT;
+float ZOOM_LEAD = 0.6f;   // seconds of look-ahead when easing the zoom-out
+float AUTO_SPEED = 0.5f;  // speed-up exponent; 0 disables automatic speed-up
+float MAX_AUTO_SPEED = 8; // cap for the automatic speed-up factor
 FT_Library ft; FT_Face face;
 
 [[noreturn]] void die(const string& m) { fprintf(stderr, "error: %s\n", m.c_str()); exit(1); }
@@ -89,6 +99,16 @@ array<float, 4> bbox(const Stroke& k) {
     const Glyph& g = glyph(k.size, k.ch);
     float x = k.x + g.left, y = k.y + asc(k.size) - g.top;
     return {x, y, x + max(g.w, 1), y + max(g.h, 1)};
+}
+// Zoom needed to fit the whole scene with the camera anchored at (0, 0).
+float fitZoom(const Scene& sc) {
+    float mx = 0, my = 0;
+    for (auto& k : sc.s) { auto b = bbox(k); mx = max(mx, b[2]); my = max(my, b[3]); }
+    return max({1.f, (mx + 120) / (W - CAM_MARGIN), (my + 120) / (H - CAM_MARGIN)});
+}
+float autoSpeed(const Scene& sc) {
+    if (AUTO_SPEED <= 0 || sc.s.empty()) return 1;
+    return min(max(1.f, MAX_AUTO_SPEED), powf(max(1.f, fitZoom(sc)), AUTO_SPEED));
 }
 // variable name with LaTeX-style index: b_{i+1}, x_1
 float writeName(Scene& sc, const string& n, float x, float y) {
@@ -560,35 +580,62 @@ void render(Scene& sc, FILE* out, long& frameNo, long totalFrames) {
             for (int by = max(0.f, b[1]) / BK; by <= (int)max(0.f, b[3]) / BK; by++) buckets[(uint64_t)bx << 32 | by].push_back(i);
     }
     vector<long> stamp(S.size(), -1); vector<float> acc(W * H); vector<uint8_t> fr(W * H * 3);
-    const float M = 100, WIN = 60, zmax = max({1.f, BW / W, BH / H}) * 1.05f;
+    const float M = CAM_MARGIN, WIN = 60, zmax = max({1.f, BW / W, BH / H}) * 1.05f;
     float zc = 1, cam[2] = {0, 0}, tgt[2] = {0, 0}, bnd[2] = {BW, BH}; bool first = true;
-    array<float, 4> act{0, 0, (float)W, (float)H}; size_t wa = 0, wb = 0;
+    array<float, 4> act{0, 0, (float)W, (float)H}; size_t wa = 0, wb = 0, nextB = 0;
     auto pen = [&](const Stroke& k, float f) { float p = k.dur < 1e-6f ? 1 : clamp((f - k.t0 + 1) / k.dur, 0.f, 1.f);
         return make_pair(k.x + (k.x2 - k.x) * p, k.y + (k.y2 - k.y) * p); };
     long nF = (long)ceil(sc.T) + 1; auto t0 = chrono::steady_clock::now();
-    for (long f = 0; f < nF; f++, frameNo++) {
-        // --- camera: fit everything written during the last WIN frames ---
-        while (wb < S.size() && S[wb].t0 <= f) wb++;
-        while (wa < wb && S[wa].t0 < f - WIN) wa++;
-        if (wa < wb) {
-            act = {INF, INF, -INF, -INF};
-            for (size_t i = wa; i < wb; i++) {
-                array<float, 4> b = BB[i];
-                if (!S[i].size) { auto [px, py] = pen(S[i], f); b = {px - 4, py - 4, px + 4, py + 4}; }
-                act = {min(act[0], b[0]), min(act[1], b[1]), max(act[2], b[2]), max(act[3], b[3])};
+    bool fitCam = CAMERA == CAM_FIT;
+    vector<float> zfit;
+    if (fitCam) {
+        // Required zoom for every frame, based on everything written up to then.
+        zfit.resize(nF); float mx = 0, my = 0;
+        for (long f = 0; f < nF; f++) {
+            while (nextB < S.size() && S[nextB].t0 <= f) {
+                mx = max(mx, BB[nextB][2]); my = max(my, BB[nextB][3]); nextB++;
             }
+            zfit[f] = max({1.f, (mx + 120) / (W - M), (my + 120) / (H - M)});
         }
-        float zt = clamp(max((act[2] - act[0]) / (W - 2 * M), (act[3] - act[1]) / (H - 2 * M)), 1.f, zmax);
-        zc = first ? zt : zc * powf(zt / zc, 0.04f);
-        float vw[2] = {W * zc, H * zc}, mb = M * zc;
-        for (int ax = 0; ax < 2; ax++) {
-            float lo = act[ax], hi = act[ax + 2];
-            if (hi - lo > vw[ax] - 2 * mb) tgt[ax] = (lo + hi - vw[ax]) / 2;
-            else { if (lo < tgt[ax] + mb) tgt[ax] = lo - mb; if (hi > tgt[ax] + vw[ax] - mb) tgt[ax] = hi - vw[ax] + mb; }
-            tgt[ax] = clamp(tgt[ax], 0.f, max(0.f, bnd[ax] - vw[ax]));
-            cam[ax] = first ? tgt[ax] : cam[ax] + (tgt[ax] - cam[ax]) * 0.08f;
+        // Ease towards the future requirement (a backwards exponential average).
+        // The result is monotone, always at least the current requirement, and
+        // starts zooming out before new strokes reach the edge.  It never pans
+        // and never zooms back in, so the view cannot jump around.
+        float a = expf(-1.f / (FPS * max(0.05f, ZOOM_LEAD)));
+        float z = zfit.back();
+        for (long f = nF - 1; f >= 0; f--) { z = a * z + (1 - a) * zfit[f]; zfit[f] = max(z, zfit[f]); }
+    }
+    for (long f = 0; f < nF; f++, frameNo++) {
+        float vw[2] = {W, H};
+        if (fitCam) {
+            // --- camera: fixed at the origin, zoom out only ---
+            zc = zfit[f]; cam[0] = cam[1] = 0;
+            vw[0] = W * zc; vw[1] = H * zc;
+        } else {
+            // --- camera: follow everything written during the last WIN frames ---
+            while (wb < S.size() && S[wb].t0 <= f) wb++;
+            while (wa < wb && S[wa].t0 < f - WIN) wa++;
+            if (wa < wb) {
+                act = {INF, INF, -INF, -INF};
+                for (size_t i = wa; i < wb; i++) {
+                    array<float, 4> b = BB[i];
+                    if (!S[i].size) { auto [px, py] = pen(S[i], f); b = {px - 4, py - 4, px + 4, py + 4}; }
+                    act = {min(act[0], b[0]), min(act[1], b[1]), max(act[2], b[2]), max(act[3], b[3])};
+                }
+            }
+            float zt = clamp(max((act[2] - act[0]) / (W - 2 * M), (act[3] - act[1]) / (H - 2 * M)), 1.f, zmax);
+            zc = first ? zt : zc * powf(zt / zc, 0.04f);
+            vw[0] = W * zc; vw[1] = H * zc;
+            float mb = M * zc;
+            for (int ax = 0; ax < 2; ax++) {
+                float lo = act[ax], hi = act[ax + 2];
+                if (hi - lo > vw[ax] - 2 * mb) tgt[ax] = (lo + hi - vw[ax]) / 2;
+                else { if (lo < tgt[ax] + mb) tgt[ax] = lo - mb; if (hi > tgt[ax] + vw[ax] - mb) tgt[ax] = hi - vw[ax] + mb; }
+                tgt[ax] = clamp(tgt[ax], 0.f, max(0.f, bnd[ax] - vw[ax]));
+                cam[ax] = first ? tgt[ax] : cam[ax] + (tgt[ax] - cam[ax]) * 0.08f;
+            }
+            first = false;
         }
-        first = false;
         // --- draw visible strokes into a coverage buffer ---
         fill(acc.begin(), acc.end(), 0.f);
         float iz = 1 / zc; int L = max(0, (int)floor(log2f(zc) + 1e-4f));
@@ -649,11 +696,22 @@ int main(int argc, char** argv) {
         else if (a == "--speed") speed = atof(argv[++i]); else if (a == "--encoder") enc = argv[++i];
         else if (a == "--decimals") DECIMALS = atoi(argv[++i]); else if (a == "--dry") dry = true;
         else if (a == "--font") { if (++i == argc) die("--font requires a path"); font = argv[i]; fontGiven = true; }
+        else if (a == "--camera") {
+            if (++i == argc) die("--camera requires fit or follow");
+            string v = argv[i];
+            if (v == "fit") CAMERA = CAM_FIT;
+            else if (v == "follow") CAMERA = CAM_FOLLOW;
+            else die("--camera must be fit or follow");
+        }
+        else if (a == "--zoom-lead") { if (++i == argc) die("--zoom-lead requires seconds"); ZOOM_LEAD = atof(argv[i]); }
+        else if (a == "--auto-speed") { if (++i == argc) die("--auto-speed requires a value"); AUTO_SPEED = atof(argv[i]); }
+        else if (a == "--max-auto-speed") { if (++i == argc) die("--max-auto-speed requires a value"); MAX_AUTO_SPEED = atof(argv[i]); }
         else if (in.empty()) in = a;
         else if (out.empty()) out = a;
         else die("unexpected argument: " + a);
     }
-    if (in.empty() || out.empty()) die("usage: board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--font PATH] [--encoder h264_nvenc] [--dry]");
+    if (in.empty() || out.empty()) die("usage: board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--font PATH] [--encoder h264_nvenc] [--camera fit|follow] [--zoom-lead S] [--auto-speed R] [--max-auto-speed X] [--dry]");
+    AUTO_SPEED = max(0.f, AUTO_SPEED); MAX_AUTO_SPEED = max(1.f, MAX_AUTO_SPEED); ZOOM_LEAD = max(0.05f, ZOOM_LEAD);
     if (FT_Init_FreeType(&ft)) die("freetype");
     vector<string> fonts = {font};
     if (!fontGiven)
@@ -687,11 +745,23 @@ int main(int argc, char** argv) {
         fprintf(stderr, "ok (bc agrees): %.100s\n", l.c_str());
     }
     if (any_of(scenes.begin(), scenes.end(), [](auto& s) { return !s.name.empty(); })) scenes.push_back(summary(scenes));
-    double total = 0; for (auto& s : scenes) total += s.T;
-    double k = minutes > 0 ? minutes * 60 * FPS / total : 1 / speed;
+    vector<double> boost(scenes.size(), 1);
+    double weighted = 0, maxBoost = 1;
+    for (size_t i = 0; i < scenes.size(); i++) {
+        boost[i] = autoSpeed(scenes[i]);
+        maxBoost = max(maxBoost, boost[i]);
+        weighted += scenes[i].T / boost[i];
+    }
+    double k = minutes > 0 ? minutes * 60 * FPS / max(weighted, 1e-9) : 1 / max(speed, 1e-9);
     long frames = 0;
-    for (auto& s : scenes) { for (auto& st : s.s) { st.t0 *= k; st.dur *= k; if (st.te < INF) st.te *= k; } s.T *= k; frames += (long)ceil(s.T) + 1; }
-    fprintf(stderr, "video length %.1f min (%ld frames, time scale %.4g)\n", frames / (60.0 * FPS), frames, k);
+    for (size_t i = 0; i < scenes.size(); i++) {
+        double ks = k / boost[i];
+        for (auto& st : scenes[i].s) { st.t0 *= ks; st.dur *= ks; if (st.te < INF) st.te *= ks; }
+        scenes[i].T *= ks; frames += (long)ceil(scenes[i].T) + 1;
+    }
+    fprintf(stderr, "video length %.1f min (%ld frames, time scale %.4g", frames / (60.0 * FPS), frames, k);
+    if (maxBoost > 1.001) fprintf(stderr, ", auto-speed up to %.2fx", maxBoost);
+    fprintf(stderr, ")\n");
     if (dry) return 0;
     textures();
     string cmd = "ffmpeg -y -loglevel error -f rawvideo -pix_fmt rgb24 -s 1280x720 -r 30 -i - -c:v " + enc +

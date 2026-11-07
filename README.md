@@ -2,8 +2,9 @@
 
 Generates chalk-on-blackboard videos of column arithmetic (addition, subtraction,
 multiplication and long division), including operands with 1000+ digits. Each
-frame rasterises only the strokes visible to the camera, and the camera zooms
-out to fit what was recently written.
+frame rasterises only the strokes visible to the camera. By default the camera
+stays at the board origin and only zooms out, fitting everything written so far,
+so the view never pans back and forth (long division in particular stays stable).
 
 ## Dependencies
 
@@ -34,7 +35,8 @@ make
 ## Usage
 
 ```sh
-./board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--font PATH] [--encoder h264_nvenc] [--dry]
+./board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--font PATH] [--encoder h264_nvenc]
+                         [--camera fit|follow] [--zoom-lead S] [--auto-speed R] [--max-auto-speed X] [--dry]
 ```
 
 Both the input file and the output file are required. The output may also be
@@ -47,6 +49,18 @@ given with `-o out.mp4`. For example:
 - `--dry` parses the input and verifies the arithmetic without rendering.
 - `--speed` scales the animation speed (larger is faster).
 - `--minutes` instead targets a total video length.
+- `--camera fit` (default) keeps the camera fixed at the origin and only zooms
+  out until all writing fits. `--camera follow` restores the old behaviour that
+  pans to follow recent writing.
+- `--zoom-lead S` sets how many seconds ahead the zoom-out is eased (default
+  `0.6`). Larger values zoom out earlier and more gently.
+- `--auto-speed R` speeds up scenes whose final zoom is large, because very small
+  writing (huge operands) is not readable in detail anyway. The boost is
+  `finalZoom^R`, capped by `--max-auto-speed`, and applied on top of `--speed`.
+  Default `R = 0.5`; use `--auto-speed 0` to disable it.
+- `--max-auto-speed X` caps that boost (default `8`). With `--minutes`, the
+  automatic boost redistributes time between scenes but still targets the
+  requested total length.
 - `--decimals N` additionally caps the number of quotient decimals in division.
   By default the quotient keeps at most `2 * max(A, B)` significant decimals,
   where `A` and `B` are the digit counts of the operands (leading zeros
