@@ -1,0 +1,6 @@
+# [name =] number op number    ops: + - * / (also x × − : ÷)
+# decimal comma, space as thousand separator; names may have a LaTeX index: b_{i+1}, x_1
+s = 1 234,5 + 678,75
+d = 5 002,3 - 87,65
+a = 4,7 * 13,6
+q_{i+1} = 9 175,5 / 25
