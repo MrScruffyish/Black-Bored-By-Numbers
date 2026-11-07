@@ -42,10 +42,11 @@ given with `-o out.mp4`. For example:
 - `--speed` scales the animation speed (larger is faster).
 - `--minutes` instead targets a total video length.
 - `--decimals N` additionally caps the number of quotient decimals in division.
-  By default the quotient keeps at most `max(A, B)` significant digits, where
-  `A` and `B` are the digit counts of the operands (leading zeros excluded), so
-  `1 / 3` becomes `0,3` instead of running forever. Integer digits are always
-  kept in full.
+  By default the quotient keeps at most `2 * max(A, B)` significant decimals,
+  where `A` and `B` are the digit counts of the operands (leading zeros
+  excluded). Leading zeros right after the comma do not count, so `1 / 3`
+  becomes `0,33` instead of running forever, and `0,001 / 0,5` is still
+  `0,002`. Integer digits are always kept in full.
 
 Input is one operation per line. Decimal comma and spaces as thousands
 separators are supported, as are `+ - * x × − / : ÷` and optional variable
@@ -54,8 +55,18 @@ names with a LaTeX-style index:
 ```text
 s = 1 234,5 + 678,75
 d = 5 002,3 - 87,65
-a = 4,7 * 13,6
+a = 4,71 * 13,6
 q_{i+1} = 9 175,5 / 25
+```
+
+Lines containing a backslash (or wrapped in `$...$`) are rendered as math
+formulas instead. A small LaTeX subset is supported: `\frac{}{}`, `\sqrt{}`,
+`\left...\right`, `_`/`^` scripts, groups, and symbols such as `\approx`,
+`\times`, `\cdot`, `\pi` and `\infty`:
+
+```text
+π \approx 3,141 6
+x_{n+1} = \frac{1}{2}\left(x_n + \frac{N}{x_n}\right)
 ```
 
 See `examples.txt` for a complete example.

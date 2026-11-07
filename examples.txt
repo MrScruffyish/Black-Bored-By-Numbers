@@ -2,5 +2,9 @@
 # decimal comma, space as thousand separator; names may have a LaTeX index: b_{i+1}, x_1
 s = 1 234,5 + 678,75
 d = 5 002,3 - 87,65
-a = 4,7 * 13,6
+a = 4,71 * 13,6
 q_{i+1} = 9 175,5 / 25
+
+# lines with a backslash (or wrapped in $...$) are rendered as math formulas
+π \approx 3,141 6
+x_{n+1} = \frac{1}{2}\left(x_n + \frac{N}{x_n}\right)

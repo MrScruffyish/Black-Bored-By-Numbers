@@ -11,7 +11,7 @@ using namespace std;
 const int W = 1280, H = 720, FPS = 30, BIG = 110, SMALL = 50, TITLE = 72;
 const float RH = 135, GAP = 28, INF = 1e30f;
 const unsigned char CHALK[3] = {238, 242, 236}, GREEN[3] = {34, 72, 50};
-int DECIMALS = -1;  // optional cap on quotient decimals; -1 = only the significant-digit rule
+int DECIMALS = -1;  // optional cap on quotient decimals; -1 = only the 2*max(A,B) rule
 FT_Library ft; FT_Face face;
 
 [[noreturn]] void die(const string& m) { fprintf(stderr, "error: %s\n", m.c_str()); exit(1); }
@@ -100,6 +100,209 @@ float writeName(Scene& sc, const string& n, float x, float y) {
         x = sc.text(sub, x, y + TITLE * 0.35f, TITLE * 6 / 10);
     }
     return x;
+}
+
+// ---------------- math formulas (small LaTeX subset) ----------------
+// Supported: \frac{}{}, \sqrt{}, \left...\right, _ and ^ scripts, groups,
+// and a handful of symbol commands (\approx, \times, \cdot, \pi, ...).
+struct MathAtom {
+    enum Kind { CH, GROUP, FRAC, SQRT, DELIM } kind = CH;
+    char32_t ch = 0, lo = 0, hi = 0;
+    vector<MathAtom> body, num, den, sub, sup;
+    bool hasSub = false, hasSup = false;
+};
+using MathSeq = vector<MathAtom>;
+struct MathBox { float w = 0, asc = 0, desc = 0; };
+
+float mAsc(int s) { return s * 0.75f; }
+float mDesc(int s) { return s * 0.22f; }
+int mScript(int s) { return max(8, (int)lround(s * 0.65f)); }
+int mFrac(int s) { return max(8, (int)lround(s * 0.72f)); }
+
+MathBox measureSeq(const MathSeq& v, int size);
+MathBox coreBox(const MathAtom& a, int size) {
+    switch (a.kind) {
+        case MathAtom::CH: return {adv(size), mAsc(size), mDesc(size)};
+        case MathAtom::GROUP: return measureSeq(a.body, size);
+        case MathAtom::FRAC: {
+            int s = mFrac(size);
+            MathBox n = measureSeq(a.num, s), d = measureSeq(a.den, s);
+            float pad = size * 0.18f, gap = size * 0.12f, bar = -0.30f * size;
+            float nb = bar - gap - n.desc, db = bar + gap + d.asc;
+            return {max(n.w, d.w) + 2 * pad, n.asc - nb, db + d.desc};
+        }
+        case MathAtom::SQRT: {
+            MathBox b = measureSeq(a.body, size);
+            return {adv(size) + b.w + size * 0.08f, max(b.asc + size * 0.10f, mAsc(size)), b.desc};
+        }
+        default: {  // DELIM
+            MathBox b = measureSeq(a.body, size);
+            float need = b.asc + b.desc + size * 0.30f;
+            int ds = max(size, (int)ceilf(need / 0.92f));
+            float w = (a.lo ? adv(ds) : 0.f) + b.w + (a.hi ? adv(ds) : 0.f);
+            return {w, max(b.asc, mAsc(ds)), max(b.desc, mDesc(ds))};
+        }
+    }
+}
+MathBox measureAtom(const MathAtom& a, int size) {
+    MathBox b = coreBox(a, size);
+    if (!a.hasSub && !a.hasSup) return b;
+    int s = mScript(size); float sw = 0;
+    if (a.hasSup) { MathBox u = measureSeq(a.sup, s); sw = max(sw, u.w); b.asc = max(b.asc, 0.44f * size + u.asc); }
+    if (a.hasSub) { MathBox u = measureSeq(a.sub, s); sw = max(sw, u.w); b.desc = max(b.desc, 0.24f * size + u.desc); }
+    b.w += sw + size * 0.06f;
+    return b;
+}
+MathBox measureSeq(const MathSeq& v, int size) {
+    MathBox b;
+    for (auto& a : v) { MathBox x = measureAtom(a, size); b.w += x.w; b.asc = max(b.asc, x.asc); b.desc = max(b.desc, x.desc); }
+    return b;
+}
+
+void emitAtom(Scene& sc, const MathAtom& a, float x, float baseline, int size);
+void emitSeq(Scene& sc, const MathSeq& v, float x, float baseline, int size) {
+    for (auto& a : v) { emitAtom(sc, a, x, baseline, size); x += measureAtom(a, size).w; }
+}
+void emitAtom(Scene& sc, const MathAtom& a, float x, float baseline, int size) {
+    MathBox core = coreBox(a, size);
+    auto put = [&](char32_t c, float gx, float gy, int s) { if (c) sc.glyphs(u32string(1, c), gx, gy, s, 2, 0); };
+    switch (a.kind) {
+        case MathAtom::CH: put(a.ch, x, baseline, size); break;
+        case MathAtom::GROUP: emitSeq(sc, a.body, x, baseline, size); break;
+        case MathAtom::FRAC: {
+            int s = mFrac(size);
+            MathBox n = measureSeq(a.num, s), d = measureSeq(a.den, s);
+            float pad = size * 0.18f, gap = size * 0.12f, bar = baseline - 0.30f * size;
+            emitSeq(sc, a.num, x + (core.w - n.w) / 2, bar - gap - n.desc, s);
+            sc.line(x + pad * 0.35f, bar, x + core.w - pad * 0.35f, bar, 3);
+            emitSeq(sc, a.den, x + (core.w - d.w) / 2, bar + gap + d.asc, s);
+            break;
+        }
+        case MathAtom::SQRT: {
+            MathBox b = measureSeq(a.body, size);
+            float top = baseline - b.asc - size * 0.10f;
+            put(U'√', x, baseline, size);
+            sc.line(x + adv(size) * 0.92f, top, x + core.w, top, 3);
+            emitSeq(sc, a.body, x + adv(size), baseline, size);
+            break;
+        }
+        default: {  // DELIM
+            MathBox b = measureSeq(a.body, size);
+            float need = b.asc + b.desc + size * 0.30f;
+            int ds = max(size, (int)ceilf(need / 0.92f));
+            float lw = a.lo ? adv(ds) : 0.f;
+            float dy = (b.desc - b.asc) / 2 - (mDesc(ds) - mAsc(ds)) / 2;
+            if (a.lo) put(a.lo, x, baseline + dy, ds);
+            emitSeq(sc, a.body, x + lw, baseline, size);
+            if (a.hi) put(a.hi, x + lw + b.w, baseline + dy, ds);
+            break;
+        }
+    }
+    if (a.hasSub || a.hasSup) {
+        int s = mScript(size);
+        float sx = x + core.w + size * 0.06f;
+        if (a.hasSub) emitSeq(sc, a.sub, sx, baseline + 0.24f * size, s);
+        if (a.hasSup) emitSeq(sc, a.sup, sx, baseline - 0.44f * size, s);
+    }
+}
+
+struct MathParser {
+    string s; size_t i = 0;
+    explicit MathParser(string t) : s(move(t)) {}
+    bool eof() const { return i >= s.size(); }
+    char peek() const { return i < s.size() ? s[i] : '\0'; }
+    bool at(const char* w) const {
+        size_t n = strlen(w);
+        return s.compare(i, n, w) == 0 && (i + n >= s.size() || !isalpha((unsigned char)s[i + n]));
+    }
+    char32_t utf8() {
+        unsigned char c = s[i]; int n = c < 0x80 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
+        char32_t v = n == 1 ? c : c & (0xFF >> (n + 1));
+        for (int k = 1; k < n && i + k < s.size(); k++) v = (v << 6) | (s[i + k] & 0x3F);
+        i += n; return v;
+    }
+    [[noreturn]] void bad(const string& m) { die(m); }
+    MathSeq parseGroup() {
+        if (peek() != '{') bad("math: expected '{'");
+        i++;
+        MathSeq v = parseSeq(false);
+        if (peek() != '}') bad("math: missing '}'");
+        i++;
+        return v;
+    }
+    MathSeq parseArg() {
+        if (peek() == '{') return parseGroup();
+        MathSeq v; v.push_back(parseBase()); return v;
+    }
+    char32_t parseDelim() {
+        if (peek() == '\\') {
+            i++;
+            if (peek() == '{') { i++; return '{'; }
+            if (peek() == '}') { i++; return '}'; }
+            if (peek() == '|') { i++; return '|'; }
+        }
+        if (peek() == '.') { i++; return 0; }
+        if (eof()) bad("math: expected delimiter");
+        return utf8();
+    }
+    MathAtom parseBase() {
+        if (peek() == '{') { MathAtom g; g.kind = MathAtom::GROUP; g.body = parseGroup(); return g; }
+        if (peek() != '\\') { MathAtom c; c.ch = utf8(); return c; }
+        i++;
+        string cmd;
+        if (isalpha((unsigned char)peek())) { while (isalpha((unsigned char)peek())) cmd += s[i++]; }
+        else if (!eof()) cmd = string(1, s[i++]);
+        if (cmd == "frac") { MathAtom f; f.kind = MathAtom::FRAC; f.num = parseArg(); f.den = parseArg(); return f; }
+        if (cmd == "sqrt") {
+            if (peek() == '[') { while (!eof() && peek() != ']') i++; if (!eof()) i++; }  // ignore the index
+            MathAtom r; r.kind = MathAtom::SQRT; r.body = parseArg(); return r;
+        }
+        if (cmd == "left") {
+            MathAtom d; d.kind = MathAtom::DELIM; d.lo = parseDelim();
+            d.body = parseSeq(true);
+            if (!at("\\right")) bad("math: missing \\right");
+            i += 6; d.hi = parseDelim(); return d;
+        }
+        if (cmd == "right") bad("math: unexpected \\right");
+        static const map<string, char32_t> sym = {
+            {"approx", U'≈'}, {"times", U'×'}, {"cdot", U'·'}, {"div", U'÷'}, {"pm", U'±'}, {"mp", U'∓'},
+            {"le", U'≤'}, {"leq", U'≤'}, {"ge", U'≥'}, {"geq", U'≥'}, {"neq", U'≠'}, {"ne", U'≠'},
+            {"infty", U'∞'}, {"pi", U'π'}, {"alpha", U'α'}, {"beta", U'β'}, {"gamma", U'γ'}, {"delta", U'δ'},
+            {"theta", U'θ'}, {"lambda", U'λ'}, {"mu", U'μ'}, {"sigma", U'σ'}, {"phi", U'φ'}, {"omega", U'ω'},
+            {"to", U'→'}, {"rightarrow", U'→'}, {"sum", U'∑'}, {"int", U'∫'}, {"partial", U'∂'}, {"nabla", U'∇'}
+        };
+        auto it = sym.find(cmd);
+        if (it != sym.end()) { MathAtom a; a.ch = it->second; return a; }
+        if (cmd == "{" || cmd == "}") { MathAtom a; a.ch = cmd[0]; return a; }
+        if (cmd == " " || cmd == "," || cmd == ";" || cmd == "quad" || cmd == "qquad") { MathAtom a; a.ch = U' '; return a; }
+        if (cmd.empty()) bad("math: lone backslash");
+        bad("math: unknown command \\" + cmd);
+    }
+    MathSeq parseSeq(bool stopRight) {
+        MathSeq v;
+        while (!eof() && peek() != '}') {
+            if (stopRight && at("\\right")) break;
+            MathAtom a = parseBase();
+            while (peek() == '_' || peek() == '^') {
+                char c = s[i++]; MathSeq arg = parseArg();
+                if (c == '_') { a.sub = arg; a.hasSub = true; }
+                else { a.sup = arg; a.hasSup = true; }
+            }
+            v.push_back(move(a));
+        }
+        return v;
+    }
+};
+
+Scene formula(const string& tex) {
+    MathParser p(tex);
+    MathSeq v = p.parseSeq(false);
+    if (!p.eof()) p.bad("math: unexpected '}'");
+    MathBox b = measureSeq(v, TITLE);
+    Scene sc;
+    emitSeq(sc, v, 60, 30 + b.asc, TITLE);
+    sc.pause(90);
+    return sc;
 }
 
 // ---------------- numbers ----------------
@@ -286,22 +489,23 @@ Scene divide(const Num& a, const Num& b, const string& op, const string& name) {
     if (k) sc.titleEnd = sc.text(" = " + fmtNum(A) + " " + op + " " + fmtNum(Dv), sc.titleEnd, 30, TITLE, 30);
     int nInt = A.d.size() - A.dec, nD = A.d.size();
     int N = max(sigDigits(a), sigDigits(b));  // max significant digits in the operands
-    int decCap = DECIMALS < 0 ? INT_MAX : DECIMALS;
+    int decCap = 2 * N;                       // significant quotient decimals: 2 * max(A, B)
+    if (DECIMALS >= 0) decCap = min(decCap, DECIMALS);
     auto digit = [&](int c) { int i = nD - 1 - c; return i >= 0 ? A.d[i] : 0; };
     auto qdig = [&](Big& r) { int q = 9; while (cmp(mulS(d, q), r) > 0) q--; return q; };
     auto push10 = [&](Big& r, int dg) { r.insert(r.begin(), dg); trim(r); };
     int cEnd = 0;
-    { Big r{0}; int sig = 0;
+    { Big r{0}; int sigFrac = 0;
       for (;;) {
         int e = nInt - 1 - cEnd;
         if (e < 0) {
-            if (-e > decCap || sig >= N) break;           // reached the digit budget
+            if (sigFrac >= decCap) break;                 // reached the decimal budget
             if (cEnd >= nD && isZero(r)) break;           // exact, nothing left to bring down
         }
         push10(r, digit(cEnd));
         int q = qdig(r);
         r = subB(r, mulS(d, q));
-        if (sig > 0 || q) sig++;                          // leading zeros do not count
+        if (e < 0 && (sigFrac > 0 || q)) sigFrac++;       // leading zeros after the comma are free
         cEnd++;
       } }
     int nd = d.size(); float divW = nd * CW + ((nd - 1) / 3) * GAP, barX = 200 + divW + 25;
@@ -455,6 +659,15 @@ int main(int argc, char** argv) {
     while (getline(f, l)) {
         if (!l.empty() && l.back() == '\r') l.pop_back();
         auto p = l.find_first_not_of(" \t"); if (p == string::npos || l[p] == '#') continue;
+        string body = l.substr(p, l.find_last_not_of(" \t") - p + 1);
+        bool math = body.find('\\') != string::npos || body.front() == '$' ||
+                    body.find("≈") != string::npos || body.find("≤") != string::npos || body.find("≥") != string::npos;
+        if (math) {
+            if (body.size() >= 2 && body.front() == '$' && body.back() == '$') body = body.substr(1, body.size() - 2);
+            scenes.push_back(formula(body));
+            fprintf(stderr, "ok (math): %.100s\n", body.c_str());
+            continue;
+        }
         if (!regex_match(l, m, re)) die("cannot parse: " + l);
         Num a = parse(m[2]), b = parse(m[4]); string op = m[3], name = m[1];
         scenes.push_back(op == "+" ? addsub(a, b, true, name) : op == "-" || op == "−" ? addsub(a, b, false, name)
