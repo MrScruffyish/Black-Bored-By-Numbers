@@ -120,6 +120,28 @@ bool latexMarker(const string& s, const string& cmd, string& env) {
     }
     return false;
 }
+// Trailing "\meta name=value" commands are stripped from the line and apply to
+// that line only.
+struct Meta {
+    int divDigits = -1;  // \meta div_digits=N: quotient decimals for this line
+};
+Meta takeMeta(string& body) {
+    static const regex re(R"(\s*\\meta\s+([A-Za-z][A-Za-z0-9_]*)=(\S+)\s*$)");
+    Meta meta; smatch m;
+    while (regex_search(body, m, re)) {
+        string key = m[1], val = m[2];
+        if (key == "div_digits") {
+            if (meta.divDigits >= 0) die("duplicate meta command: \\meta " + key);
+            char* end = nullptr;
+            long n = strtol(val.c_str(), &end, 10);
+            if (!end || *end || n < 0 || n > INT_MAX)
+                die("meta div_digits must be a non-negative integer: " + val);
+            meta.divDigits = (int)n;
+        } else die("unknown meta command: \\meta " + key);
+        body = m.prefix().str();
+    }
+    return meta;
+}
 // variable name with LaTeX-style index: b_{i+1}, x_1
 float writeName(Scene& sc, const string& n, float x, float y) {
     auto p = n.find('_');
@@ -537,7 +559,7 @@ int divisionLength(const Num& A, const Big& d, int nInt, int decCap) {
 }
 
 // long division, Swedish "trappan": divisor left of the bar, quotient above the dividend
-Scene divide(const Num& a, const Num& b, const string& op, const string& name) {
+Scene divide(const Num& a, const Num& b, const string& op, const string& name, int divDigits = -1) {
     Scene sc = start(name, fmtNum(a) + " " + op + " " + fmtNum(b));
     Big d = b.d; trim(d); if (isZero(d)) die("division by zero");
     Num A = a; int k = b.dec;  // move the comma k steps right in both numbers
@@ -547,8 +569,9 @@ Scene divide(const Num& a, const Num& b, const string& op, const string& name) {
     if (k) sc.titleEnd = sc.text(" = " + fmtNum(A) + " " + op + " " + fmtNum(Dv), sc.titleEnd, 30, TITLE, 30);
     int nInt = A.d.size() - A.dec, nD = A.d.size();
     int N = max(sigDigits(a), sigDigits(b));  // max significant digits in the operands
-    int decCap = 2 * N;                       // significant quotient decimals: 2 * max(A, B)
-    if (DECIMALS >= 0) decCap = min(decCap, DECIMALS);
+    int decCap = divDigits >= 0 ? divDigits      // \meta div_digits=N overrides everything
+               : 2 * N;                          // significant quotient decimals: 2 * max(A, B)
+    if (divDigits < 0 && DECIMALS >= 0) decCap = min(decCap, DECIMALS);
     auto digit = [&](int c) { int i = nD - 1 - c; return i >= 0 ? A.d[i] : 0; };
     auto qdig = [&](Big& r) { int q = 9; while (cmp(mulS(d, q), r) > 0) q--; return q; };
     auto push10 = [&](Big& r, int dg) { r.insert(r.begin(), dg); trim(r); };
@@ -583,7 +606,7 @@ Scene divide(const Num& a, const Num& b, const string& op, const string& name) {
 
 // Numeric result of one arithmetic line, formatted exactly as the video shows
 // it.  Used by --only-show-results, which skips all drawing.
-string computeValue(const Num& a, const Num& b, const string& op) {
+string computeValue(const Num& a, const Num& b, const string& op, int divDigits = -1) {
     string expr;
     if (op == "/" || op == ":" || op == "÷") {
         Big d = b.d; trim(d); if (isZero(d)) die("division by zero");
@@ -591,8 +614,8 @@ string computeValue(const Num& a, const Num& b, const string& op) {
         if (A.dec < k) { A.d.insert(A.d.begin(), k - A.dec, 0); A.dec = 0; } else A.dec -= k;
         while ((int)A.d.size() > A.dec + 1 && !A.d.back()) A.d.pop_back();
         int nInt = A.d.size() - A.dec;
-        int decCap = 2 * max(sigDigits(a), sigDigits(b));
-        if (DECIMALS >= 0) decCap = min(decCap, DECIMALS);
+        int decCap = divDigits >= 0 ? divDigits : 2 * max(sigDigits(a), sigDigits(b));
+        if (divDigits < 0 && DECIMALS >= 0) decCap = min(decCap, DECIMALS);
         int dec = divisionLength(A, d, nInt, decCap) - nInt;
         expr = "scale=" + to_string(dec) + "\n" + bcform(a) + " / " + bcform(b);
     } else if (op == "+" || op == "-" || op == "−") {
@@ -784,6 +807,8 @@ int main(int argc, char** argv) {
         if (!l.empty() && l.back() == '\r') l.pop_back();
         auto p = l.find_first_not_of(" \t"); if (p == string::npos || l[p] == '#') continue;
         string body = l.substr(p, l.find_last_not_of(" \t") - p + 1);
+        Meta meta = takeMeta(body);
+        if (body.empty()) die("meta command needs an operation on the same line: " + l);
         string env;
         if (latexBlock) {
             if (latexMarker(body, "\\end", env)) {
@@ -808,16 +833,16 @@ int main(int argc, char** argv) {
             fprintf(stderr, "ok (math): %.100s\n", body.c_str());
             continue;
         }
-        if (!regex_match(l, m, re))
-            die("cannot parse: " + l + "\n  (wrap it in \\begin{latex} ... \\end{latex} to render it as maths)");
+        if (!regex_match(body, m, re))
+            die("cannot parse: " + body + "\n  (wrap it in \\begin{latex} ... \\end{latex} to render it as maths)");
         Num a = parse(m[2]), b = parse(m[4]); string op = m[3], name = m[1];
         name.erase(remove_if(name.begin(), name.end(), [](unsigned char c) { return isspace(c); }), name.end());
         if (onlyResults) {
-            results.push_back(computeValue(a, b, op));
+            results.push_back(computeValue(a, b, op, meta.divDigits));
             continue;
         }
         scenes.push_back(op == "+" ? addsub(a, b, true, name) : op == "-" || op == "−" ? addsub(a, b, false, name)
-                         : op == "/" || op == ":" || op == "÷" ? divide(a, b, op, name) : mul(a, b, name));
+                         : op == "/" || op == ":" || op == "÷" ? divide(a, b, op, name, meta.divDigits) : mul(a, b, name));
         fprintf(stderr, "ok (bc agrees): %.100s\n", l.c_str());
     }
     if (latexBlock) die("unterminated \\begin" + (latexEnv.empty() ? string() : "{" + latexEnv + "}") + " block");

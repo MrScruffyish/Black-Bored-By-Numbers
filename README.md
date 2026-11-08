@@ -73,7 +73,8 @@ given with `-o out.mp4`. For example:
   where `A` and `B` are the digit counts of the operands (leading zeros
   excluded). Leading zeros right after the comma do not count, so `1 / 3`
   becomes `0,33` instead of running forever, and `0,001 / 0,5` is still
-  `0,002`. Integer digits are always kept in full.
+  `0,002`. Integer digits are always kept in full. A per-line
+  `\meta div_digits=N` overrides this (see below).
 
 Input is one operation per line. Decimal comma and spaces as thousands
 separators are supported, as are `+ - * x × − / : ÷` and optional variable
@@ -85,6 +86,17 @@ d = 5 002,3 - 87,65
 a = 4,71 * 13,6
 q_{i+1} = 9 175,5 / 25
 ```
+
+A meta command can be appended to the end of any line. It is stripped before
+parsing and applies to that line only, e.g.:
+
+```text
+x = 1 / 3 \meta div_digits=10
+```
+
+`div_digits=N` makes the division on that line keep at most `N` significant
+quotient decimals (leading zeros right after the comma do not count). It
+overrides both the default `2 * max(A, B)` rule and `--decimals`.
 
 Lines containing a backslash (or wrapped in `$...$`) are rendered as math
 formulas instead. A small LaTeX subset is supported: `\frac{}{}`, `\sqrt{}`,
