@@ -123,7 +123,7 @@ bool latexMarker(const string& s, const string& cmd, string& env) {
 // Trailing "\meta name=value" commands are stripped from the line and apply to
 // that line only.
 struct Meta {
-    int divDigits = -1;  // \meta div_digits=N: quotient decimals for this line
+    int divDigits = -1;  // \meta div_digits=N: significant quotient digits for this line
 };
 Meta takeMeta(string& body) {
     static const regex re(R"(\s*\\meta\s+([A-Za-z][A-Za-z0-9_]*)=(\S+)\s*$)");
@@ -536,23 +536,27 @@ Scene mul(const Num& A, const Num& B, const string& name) {
 
 // Number of dividend digits consumed by long division, i.e. the number of
 // quotient digits.  Shared by the renderer and --only-show-results so both
-// stop the quotient at exactly the same place.
-int divisionLength(const Num& A, const Big& d, int nInt, int decCap) {
+// stop the quotient at exactly the same place.  cap counts fractional digits
+// by default; with totalDigits it counts all significant digits of the
+// quotient (leading zeros do not count, integer digits are always kept whole).
+int divisionLength(const Num& A, const Big& d, int nInt, int cap, bool totalDigits) {
     int nD = A.d.size();
     auto digit = [&](int c) { int i = nD - 1 - c; return i >= 0 ? A.d[i] : 0; };
     auto qdig = [&](Big& r) { int q = 9; while (cmp(mulS(d, q), r) > 0) q--; return q; };
     auto push10 = [&](Big& r, int dg) { r.insert(r.begin(), dg); trim(r); };
-    int cEnd = 0; Big r{0}; int sigFrac = 0;
+    int cEnd = 0; Big r{0}; int sigFrac = 0, sigTotal = 0; bool started = false;
     for (;;) {
         int e = nInt - 1 - cEnd;
         if (e < 0) {
-            if (sigFrac >= decCap) break;                 // reached the decimal budget
-            if (cEnd >= nD && isZero(r)) break;           // exact, nothing left to bring down
+            if (totalDigits ? sigTotal >= cap : sigFrac >= cap) break;  // reached the digit budget
+            if (cEnd >= nD && isZero(r)) break;                         // exact, nothing left to bring down
         }
         push10(r, digit(cEnd));
         int q = qdig(r);
         r = subB(r, mulS(d, q));
-        if (e < 0 && (sigFrac > 0 || q)) sigFrac++;       // leading zeros after the comma are free
+        if (q) started = true;
+        if (started) sigTotal++;                                   // leading zeros do not count
+        if (e < 0 && (sigFrac > 0 || q)) sigFrac++;                // leading zeros after the comma are free
         cEnd++;
     }
     return cEnd;
@@ -575,7 +579,7 @@ Scene divide(const Num& a, const Num& b, const string& op, const string& name, i
     auto digit = [&](int c) { int i = nD - 1 - c; return i >= 0 ? A.d[i] : 0; };
     auto qdig = [&](Big& r) { int q = 9; while (cmp(mulS(d, q), r) > 0) q--; return q; };
     auto push10 = [&](Big& r, int dg) { r.insert(r.begin(), dg); trim(r); };
-    int cEnd = divisionLength(A, d, nInt, decCap);
+    int cEnd = divisionLength(A, d, nInt, decCap, divDigits >= 0);
     int nd = d.size(); float divW = nd * CW + ((nd - 1) / 3) * GAP, barX = 200 + divW + 25;
     Grid g = Grid::leftAt(barX + 30, nInt - 1); auto X = [&](int e) { return g.X(e); };
     Grid gd = Grid::leftAt(200, nd - 1);
@@ -616,7 +620,7 @@ string computeValue(const Num& a, const Num& b, const string& op, int divDigits 
         int nInt = A.d.size() - A.dec;
         int decCap = divDigits >= 0 ? divDigits : 2 * max(sigDigits(a), sigDigits(b));
         if (divDigits < 0 && DECIMALS >= 0) decCap = min(decCap, DECIMALS);
-        int dec = divisionLength(A, d, nInt, decCap) - nInt;
+        int dec = divisionLength(A, d, nInt, decCap, divDigits >= 0) - nInt;
         expr = "scale=" + to_string(dec) + "\n" + bcform(a) + " / " + bcform(b);
     } else if (op == "+" || op == "-" || op == "−") {
         expr = bcform(a) + (op == "+" ? " + " : " - ") + bcform(b);

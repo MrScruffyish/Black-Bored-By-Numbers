@@ -95,8 +95,9 @@ x = 1 / 3 \meta div_digits=10
 ```
 
 `div_digits=N` makes the division on that line keep at most `N` significant
-quotient decimals (leading zeros right after the comma do not count). It
-overrides both the default `2 * max(A, B)` rule and `--decimals`.
+digits in the quotient. Leading zeros do not count and integer digits are
+always kept in full. It overrides both the default `2 * max(A, B)` rule and
+`--decimals`.
 
 Lines containing a backslash (or wrapped in `$...$`) are rendered as math
 formulas instead. A small LaTeX subset is supported: `\frac{}{}`, `\sqrt{}`,
