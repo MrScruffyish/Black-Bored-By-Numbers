@@ -99,6 +99,26 @@ digits in the quotient. Leading zeros do not count and integer digits are
 always kept in full. It overrides both the default `2 * max(A, B)` rule and
 `--decimals`.
 
+Square roots are written `sqrt{N}` (no backslash) and are computed and drawn
+with the longhand square-root method, which is laid out like long division:
+the root above the radicand, the trial divisors on the left and the products
+subtracted underneath. An optional variable name works as for the other
+operations:
+
+```text
+a = sqrt{2}
+sqrt{152,29}
+```
+
+By default the root keeps at most `2 * D` significant digits, where `D` is the
+number of digits in the radicand (leading zeros excluded), mirroring the
+division rule. Leading zeros do not count and integer digits are always kept
+in full. A per-line `\meta sqrt_digits=K` overrides this:
+
+```text
+sqrt{2} \meta sqrt_digits=20
+```
+
 Lines containing a backslash (or wrapped in `$...$`) are rendered as math
 formulas instead. A small LaTeX subset is supported: `\frac{}{}`, `\sqrt{}`,
 `\left...\right`, `_`/`^` scripts, groups, and symbols such as `\approx`,

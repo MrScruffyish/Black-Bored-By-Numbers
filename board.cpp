@@ -123,20 +123,22 @@ bool latexMarker(const string& s, const string& cmd, string& env) {
 // Trailing "\meta name=value" commands are stripped from the line and apply to
 // that line only.
 struct Meta {
-    int divDigits = -1;  // \meta div_digits=N: significant quotient digits for this line
+    int divDigits = -1;   // \meta div_digits=N: significant quotient digits for this line
+    int sqrtDigits = -1;  // \meta sqrt_digits=N: significant root digits for this line
 };
 Meta takeMeta(string& body) {
     static const regex re(R"(\s*\\meta\s+([A-Za-z][A-Za-z0-9_]*)=(\S+)\s*$)");
     Meta meta; smatch m;
     while (regex_search(body, m, re)) {
         string key = m[1], val = m[2];
-        if (key == "div_digits") {
-            if (meta.divDigits >= 0) die("duplicate meta command: \\meta " + key);
+        if (key == "div_digits" || key == "sqrt_digits") {
+            int& dst = key == "div_digits" ? meta.divDigits : meta.sqrtDigits;
+            if (dst >= 0) die("duplicate meta command: \\meta " + key);
             char* end = nullptr;
             long n = strtol(val.c_str(), &end, 10);
             if (!end || *end || n < 0 || n > INT_MAX)
-                die("meta div_digits must be a non-negative integer: " + val);
-            meta.divDigits = (int)n;
+                die("meta " + key + " must be a non-negative integer: " + val);
+            dst = (int)n;
         } else die("unknown meta command: \\meta " + key);
         body = m.prefix().str();
     }
@@ -375,9 +377,19 @@ Big subB(Big a, const Big& b) {
     for (size_t i = 0; i < a.size(); i++) { int v = a[i] - br - (i < b.size() ? b[i] : 0); br = v < 0; a[i] = v + 10 * br; }
     trim(a); return a;
 }
-Big mulS(const Big& a, int q) { Big r; int c = 0; for (int x : a) { int v = x * q + c; r.push_back(v % 10); c = v / 10; } if (c) r.push_back(c); trim(r); return r; }
+Big mulS(const Big& a, int q) { Big r; int c = 0; for (int x : a) { int v = x * q + c; r.push_back(v % 10); c = v / 10; } while (c) { r.push_back(c % 10); c /= 10; } trim(r); return r; }
+Big addInt(Big a, int v) {  // a + v, v small
+    int c = v;
+    for (size_t i = 0; c; i++) {
+        if (i == a.size()) a.push_back(0);
+        int s = a[i] + c % 10;
+        a[i] = s % 10; c = c / 10 + s / 10;
+    }
+    trim(a); return a;
+}
 bool isZero(const Big& a) { return a.size() == 1 && !a[0]; }
 int sigDigits(const Num& n) { Big t = n.d; trim(t); return t.size(); }  // digits ignoring leading zeros
+
 
 Num parse(string s) {
     Num n; s.erase(remove(s.begin(), s.end(), ' '), s.end());
@@ -389,6 +401,73 @@ Num parse(string s) {
 }
 int get(const Num& n, int e) { int k = e + n.dec; return k >= 0 && k < (int)n.d.size() ? n.d[k] : 0; }
 int hiE(const Num& n) { return (int)n.d.size() - n.dec - 1; }
+// ---------------- square root ----------------
+// Digits of N split into pairs, with the decimal point between the two lists.
+// A pair is {tens, units}; the leading integer pair has tens = -1 when it has
+// only one digit, and an odd fractional tail is padded with a zero.
+struct Pairs {
+    vector<vector<int>> ints, frac;
+    int count() const { return ints.size() + frac.size(); }
+    int value(int i) const {
+        if (i < (int)ints.size()) { const auto& d = ints[i]; return (d[0] < 0 ? 0 : d[0]) * 10 + d[1]; }
+        i -= ints.size();
+        if (i < (int)frac.size()) { const auto& d = frac[i]; return (d[0] < 0 ? 0 : d[0]) * 10 + d[1]; }
+        return 0;  // implicit zero pairs continue the decimal expansion
+    }
+};
+Pairs splitPairs(const Num& n) {
+    Pairs p; vector<int> ints, frac;
+    for (int e = hiE(n); e >= 0; e--) ints.push_back(get(n, e));
+    for (int e = -1; e >= -n.dec; e--) frac.push_back(get(n, e));
+    p.ints.assign((ints.size() + 1) / 2, vector<int>(2, -1));
+    int k = (int)ints.size() - 1;
+    for (int i = (int)p.ints.size() - 1; i >= 0; i--) {
+        p.ints[i][1] = ints[k--];
+        if (k >= 0) p.ints[i][0] = ints[k--];
+    }
+    for (size_t j = 0; j < frac.size(); j += 2) {
+        vector<int> d(2, -1);
+        d[0] = frac[j];
+        d[1] = j + 1 < frac.size() ? frac[j + 1] : 0;
+        p.frac.push_back(d);
+    }
+    return p;
+}
+struct SqrtStep { int digit; Big divisor, product, remainder; };
+struct SqrtResult {
+    int intDigits = 0;  // root digits before the comma
+    Big root;
+    vector<SqrtStep> steps;
+    int dec() const { return (int)steps.size() - intDigits; }
+};
+SqrtResult sqrtResult(const Num& n, int sqrtDigits) {
+    Pairs p = splitPairs(n);
+    int P_int = (int)p.ints.size(), P_given = p.count();
+    int cap = sqrtDigits >= 0 ? sqrtDigits : 2 * sigDigits(n);
+    SqrtResult r; r.intDigits = P_int;
+    Big root{0}, rem{0};
+    int sig = 0; bool started = false;
+    for (int i = 0; ; i++) {
+        Big cur = addInt(mulS(rem, 100), p.value(i));
+        Big trial = mulS(root, 20);
+        int d = 9;
+        while (d > 0 && cmp(mulS(addInt(trial, d), d), cur) > 0) d--;
+        Big divisor = addInt(trial, d), product = mulS(divisor, d);
+        rem = subB(cur, product);
+        root = addInt(mulS(root, 10), d);
+        r.steps.push_back({d, divisor, product, rem});
+        if (d) started = true;
+        if (started) sig++;
+        if (i + 1 >= P_int) {
+            bool exact = isZero(rem);
+            for (int j = i + 1; exact && j < P_given; j++) if (p.value(j)) exact = false;
+            if (exact || sig >= cap) break;  // integer digits are always kept whole
+        }
+    }
+    r.root = root;
+    return r;
+}
+
 string norm(string s) {
     while (!s.empty() && isspace(s.back())) s.pop_back();
     if (s.empty() || s[0] == '.') s = "0" + s;
@@ -608,6 +687,75 @@ Scene divide(const Num& a, const Num& b, const string& op, const string& name, i
     return sc;
 }
 
+// Square root by the longhand method, laid out like long division: the root
+// sits above the radicand as the quotient, each step's trial divisor is written
+// on the left, and the product is subtracted underneath.
+Scene sqrtScene(const Num& n, const string& name, int sqrtDigits) {
+    Pairs p = splitPairs(n);
+    SqrtResult sr = sqrtResult(n, sqrtDigits);
+    Scene sc = start(name, "√" + fmtNum(n));
+    int P_int = sr.intDigits, P = (int)sr.steps.size();
+    int maxDiv = 1;
+    for (auto& st : sr.steps) maxDiv = max(maxDiv, (int)st.divisor.size());
+    float divRight = 200 + maxDiv * CW + ((maxDiv - 1) / 3) * GAP, barX = divRight + 25;
+    float x0 = barX + 30, PGAP = GAP * 0.6f;
+    auto pairX = [&](int i) { return x0 + i * (2 * CW + PGAP); };
+    auto unitExp = [&](int i) { return i < P_int ? 2 * (P_int - 1 - i) : -2 * (i - P_int) - 2; };
+    auto cellX = [&](int e) {  // exponent -> x, relative to the radicand's units digit
+        int pi, within;
+        if (e >= 0) { pi = P_int - 1 - e / 2; within = 1 - e % 2; }
+        else { int q = -e - 1; pi = P_int + q / 2; within = q % 2; }
+        return pairX(pi) + within * CW;
+    };
+    auto pairDigits = [&](int i, int& tens, int& units) {
+        if (i < (int)p.ints.size()) { tens = p.ints[i][0]; units = p.ints[i][1]; }
+        else {
+            int j = i - (int)p.ints.size();
+            if (j < (int)p.frac.size()) { tens = p.frac[j][0]; units = p.frac[j][1]; }
+            else { tens = 0; units = 0; }  // implicit zero pair
+        }
+    };
+    float yRoot = sc.top, yRad = yRoot + RH + 10;
+    float yBottom = yRad + (P - 1) * (2 * RH - 5) + 120;
+    sc.line(barX, yRad + 12, pairX(P - 1) + 2 * CW, yRad + 12, 6);  // radical overline
+    sc.line(barX, yRad + 12, barX, yBottom, 4);                     // division bar
+    for (int i = 0; i < P; i++) {
+        int t, u; pairDigits(i, t, u);
+        if (t >= 0) sc.big('0' + t, pairX(i), yRad);
+        sc.big('0' + u, pairX(i) + CW, yRad);
+    }
+    if (P > P_int) {
+        float cx = pairX(P_int) - PGAP * 0.5f;
+        sc.glyphs(U",", cx, yRad, BIG, 3, 4);
+        sc.glyphs(U",", cx, yRoot, BIG, 3, 4);
+    }
+    float ycur = yRad;
+    for (int i = 0; i < P; i++) {
+        const SqrtStep& st = sr.steps[i];
+        sc.big('0' + st.digit, pairX(i) + CW, yRoot, 6);
+        float py = ycur + RH - 10;
+        if (st.digit) {
+            Grid gd = Grid::leftAt(divRight, (int)st.divisor.size() - 1);
+            for (int k = (int)st.divisor.size() - 1; k >= 0; k--) sc.big('0' + st.divisor[k], gd.X(k), py, 3);
+            for (int k = (int)st.product.size() - 1; k >= 0; k--) sc.big('0' + st.product[k], cellX(unitExp(i) + k), py, 3);
+            sc.line(cellX(unitExp(i) + (int)st.product.size() - 1) - 10, py + 120, pairX(i) + CW + 10, py + 120, 6);
+        }
+        float yrem = py + RH + 5;
+        if (!isZero(st.remainder) || i + 1 == P)
+            for (int k = (int)st.remainder.size() - 1; k >= 0; k--) sc.big('0' + st.remainder[k], cellX(unitExp(i) + k), yrem, 4);
+        if (i + 1 < P) {
+            int t, u; pairDigits(i + 1, t, u);
+            if (t >= 0) sc.big('0' + t, pairX(i + 1), yrem, 4);
+            sc.big('0' + u, pairX(i + 1) + CW, yrem, 4);
+        }
+        ycur = yrem;
+    }
+    vector<int> res = sr.root;
+    int dec = sr.dec();
+    finish(sc, res, dec, "scale=" + to_string(dec) + "\nsqrt(" + bcform(n) + ")");
+    return sc;
+}
+
 // Numeric result of one arithmetic line, formatted exactly as the video shows
 // it.  Used by --only-show-results, which skips all drawing.
 string computeValue(const Num& a, const Num& b, const string& op, int divDigits = -1) {
@@ -631,6 +779,18 @@ string computeValue(const Num& a, const Num& b, const string& op, int divDigits 
     if (!v.empty() && v[0] == '-') die("negative result not supported: " + expr);
     for (char& c : v) if (c == '.') c = ',';  // no thousand separators, keep the decimal comma
     return v;
+}
+
+// Numeric square root for --only-show-results, using the same digit extraction
+// as the rendered scene and cross-checked against bc.
+string computeSqrtValue(const Num& n, int sqrtDigits) {
+    SqrtResult r = sqrtResult(n, sqrtDigits);
+    int dec = r.dec();
+    string mine = digits2str(r.root, dec);
+    string ref = bc("scale=" + to_string(dec) + "\nsqrt(" + bcform(n) + ")");
+    if (mine != ref) die("algorithm/bc mismatch for sqrt(" + bcform(n) + ")\n mine: " + mine + "\n bc:   " + ref);
+    for (char& c : mine) if (c == '.') c = ',';
+    return mine;
 }
 
 Scene summary(const vector<Scene>& scenes) {
@@ -805,6 +965,7 @@ int main(int argc, char** argv) {
     }
     ifstream f(in); if (!f) die("cannot open " + in);
     regex re(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?([0-9 ,]*[0-9,])\s*(\+|-|\*|x|×|−|/|:|÷)\s*([0-9 ,]*[0-9,])\s*$)");
+    regex reSqrt(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?sqrt\s*\{\s*([0-9 ,]*[0-9,])\s*\}\s*$)");
     vector<Scene> scenes; vector<string> results; string l; smatch m;
     bool latexBlock = false; string latexEnv;
     while (getline(f, l)) {
@@ -835,6 +996,17 @@ int main(int argc, char** argv) {
             if (body.size() >= 2 && body.front() == '$' && body.back() == '$') body = body.substr(1, body.size() - 2);
             scenes.push_back(formula(body));
             fprintf(stderr, "ok (math): %.100s\n", body.c_str());
+            continue;
+        }
+        if (regex_match(body, m, reSqrt)) {
+            Num n = parse(m[2]); string name = m[1];
+            name.erase(remove_if(name.begin(), name.end(), [](unsigned char c) { return isspace(c); }), name.end());
+            if (onlyResults) {
+                results.push_back(computeSqrtValue(n, meta.sqrtDigits));
+                continue;
+            }
+            scenes.push_back(sqrtScene(n, name, meta.sqrtDigits));
+            fprintf(stderr, "ok (sqrt): %.100s\n", body.c_str());
             continue;
         }
         if (!regex_match(body, m, re))
