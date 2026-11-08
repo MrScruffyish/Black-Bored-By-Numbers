@@ -50,9 +50,10 @@ given with `-o out.mp4`. For example:
 
 - `--dry` parses the input and verifies the arithmetic without rendering.
 - `--only-show-results` parses the input, computes each arithmetic result and
-  prints just the numeric values to stdout, one per line, in input order.
-  Formula lines are printed unchanged. Nothing is rendered, so no output file,
-  font or `ffmpeg` is needed.
+  prints just the numeric values to stdout, one per line, in input order,
+  without thousand separators (the decimal comma is kept). Formula lines are
+  printed unchanged. Nothing is rendered, so no output file, font or `ffmpeg`
+  is needed.
 - `--speed` scales the animation speed (larger is faster).
 - `--minutes` instead targets a total video length.
 - `--camera fit` (default) keeps the camera fixed at the origin and only zooms

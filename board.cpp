@@ -602,7 +602,8 @@ string computeValue(const Num& a, const Num& b, const string& op) {
     }
     string v = bc(expr);
     if (!v.empty() && v[0] == '-') die("negative result not supported: " + expr);
-    return fmt(v);
+    for (char& c : v) if (c == '.') c = ',';  // no thousand separators, keep the decimal comma
+    return v;
 }
 
 Scene summary(const vector<Scene>& scenes) {
