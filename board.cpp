@@ -512,6 +512,30 @@ Scene mul(const Num& A, const Num& B, const string& name) {
     return sc;
 }
 
+// Number of dividend digits consumed by long division, i.e. the number of
+// quotient digits.  Shared by the renderer and --only-show-results so both
+// stop the quotient at exactly the same place.
+int divisionLength(const Num& A, const Big& d, int nInt, int decCap) {
+    int nD = A.d.size();
+    auto digit = [&](int c) { int i = nD - 1 - c; return i >= 0 ? A.d[i] : 0; };
+    auto qdig = [&](Big& r) { int q = 9; while (cmp(mulS(d, q), r) > 0) q--; return q; };
+    auto push10 = [&](Big& r, int dg) { r.insert(r.begin(), dg); trim(r); };
+    int cEnd = 0; Big r{0}; int sigFrac = 0;
+    for (;;) {
+        int e = nInt - 1 - cEnd;
+        if (e < 0) {
+            if (sigFrac >= decCap) break;                 // reached the decimal budget
+            if (cEnd >= nD && isZero(r)) break;           // exact, nothing left to bring down
+        }
+        push10(r, digit(cEnd));
+        int q = qdig(r);
+        r = subB(r, mulS(d, q));
+        if (e < 0 && (sigFrac > 0 || q)) sigFrac++;       // leading zeros after the comma are free
+        cEnd++;
+    }
+    return cEnd;
+}
+
 // long division, Swedish "trappan": divisor left of the bar, quotient above the dividend
 Scene divide(const Num& a, const Num& b, const string& op, const string& name) {
     Scene sc = start(name, fmtNum(a) + " " + op + " " + fmtNum(b));
@@ -528,20 +552,7 @@ Scene divide(const Num& a, const Num& b, const string& op, const string& name) {
     auto digit = [&](int c) { int i = nD - 1 - c; return i >= 0 ? A.d[i] : 0; };
     auto qdig = [&](Big& r) { int q = 9; while (cmp(mulS(d, q), r) > 0) q--; return q; };
     auto push10 = [&](Big& r, int dg) { r.insert(r.begin(), dg); trim(r); };
-    int cEnd = 0;
-    { Big r{0}; int sigFrac = 0;
-      for (;;) {
-        int e = nInt - 1 - cEnd;
-        if (e < 0) {
-            if (sigFrac >= decCap) break;                 // reached the decimal budget
-            if (cEnd >= nD && isZero(r)) break;           // exact, nothing left to bring down
-        }
-        push10(r, digit(cEnd));
-        int q = qdig(r);
-        r = subB(r, mulS(d, q));
-        if (e < 0 && (sigFrac > 0 || q)) sigFrac++;       // leading zeros after the comma are free
-        cEnd++;
-      } }
+    int cEnd = divisionLength(A, d, nInt, decCap);
     int nd = d.size(); float divW = nd * CW + ((nd - 1) / 3) * GAP, barX = 200 + divW + 25;
     Grid g = Grid::leftAt(barX + 30, nInt - 1); auto X = [&](int e) { return g.X(e); };
     Grid gd = Grid::leftAt(200, nd - 1);
@@ -568,6 +579,30 @@ Scene divide(const Num& a, const Num& b, const string& op, const string& name) {
     int dec = cEnd - nInt;
     finish(sc, res, dec, "scale=" + to_string(dec) + "\n" + bcform(a) + " / " + bcform(b));
     return sc;
+}
+
+// Numeric result of one arithmetic line, formatted exactly as the video shows
+// it.  Used by --only-show-results, which skips all drawing.
+string computeValue(const Num& a, const Num& b, const string& op) {
+    string expr;
+    if (op == "/" || op == ":" || op == "÷") {
+        Big d = b.d; trim(d); if (isZero(d)) die("division by zero");
+        Num A = a; int k = b.dec;  // move the comma k steps right in both numbers
+        if (A.dec < k) { A.d.insert(A.d.begin(), k - A.dec, 0); A.dec = 0; } else A.dec -= k;
+        while ((int)A.d.size() > A.dec + 1 && !A.d.back()) A.d.pop_back();
+        int nInt = A.d.size() - A.dec;
+        int decCap = 2 * max(sigDigits(a), sigDigits(b));
+        if (DECIMALS >= 0) decCap = min(decCap, DECIMALS);
+        int dec = divisionLength(A, d, nInt, decCap) - nInt;
+        expr = "scale=" + to_string(dec) + "\n" + bcform(a) + " / " + bcform(b);
+    } else if (op == "+" || op == "-" || op == "−") {
+        expr = bcform(a) + (op == "+" ? " + " : " - ") + bcform(b);
+    } else {
+        expr = bcform(a) + " * " + bcform(b);
+    }
+    string v = bc(expr);
+    if (!v.empty() && v[0] == '-') die("negative result not supported: " + expr);
+    return fmt(v);
 }
 
 Scene summary(const vector<Scene>& scenes) {
@@ -702,13 +737,14 @@ void render(Scene& sc, FILE* out, long& frameNo, long totalFrames) {
 int main(int argc, char** argv) {
     string in, out, enc = "libx264", font = "/usr/share/fonts/truetype/msttcorefonts/cour.ttf";
     bool fontGiven = false;
-    double minutes = 0, speed = 1; bool dry = false;
+    double minutes = 0, speed = 1; bool dry = false, onlyResults = false;
     for (int i = 1; i < argc; i++) {
         string a = argv[i];
         if (a == "-o") { if (++i == argc) die("-o requires an output file"); out = argv[i]; }
         else if (a == "--minutes") minutes = atof(argv[++i]);
         else if (a == "--speed") speed = atof(argv[++i]); else if (a == "--encoder") enc = argv[++i];
         else if (a == "--decimals") DECIMALS = atoi(argv[++i]); else if (a == "--dry") dry = true;
+        else if (a == "--only-show-results") onlyResults = true;
         else if (a == "--font") { if (++i == argc) die("--font requires a path"); font = argv[i]; fontGiven = true; }
         else if (a == "--camera") {
             if (++i == argc) die("--camera requires fit or follow");
@@ -724,22 +760,24 @@ int main(int argc, char** argv) {
         else if (out.empty()) out = a;
         else die("unexpected argument: " + a);
     }
-    if (in.empty() || out.empty()) die("usage: board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--font PATH] [--encoder h264_nvenc] [--camera fit|follow] [--zoom-lead S] [--auto-speed R] [--max-auto-speed X] [--dry]");
+    if (in.empty() || (!onlyResults && out.empty())) die("usage: board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--font PATH] [--encoder h264_nvenc] [--camera fit|follow] [--zoom-lead S] [--auto-speed R] [--max-auto-speed X] [--dry] [--only-show-results]\n       out.mp4 may be omitted with --only-show-results");
     AUTO_SPEED = max(0.f, AUTO_SPEED); MAX_AUTO_SPEED = max(1.f, MAX_AUTO_SPEED); ZOOM_LEAD = max(0.05f, ZOOM_LEAD);
-    if (FT_Init_FreeType(&ft)) die("freetype");
-    vector<string> fonts = {font};
-    if (!fontGiven)
-        for (const char* p : {"/usr/share/fonts/opentype/urw-base35/NimbusMonoPS-Regular.otf",
-                              "/usr/share/fonts/truetype/freefont/FreeMono.ttf",
-                              "/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf",
-                              "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"}) fonts.push_back(p);
-    bool loaded = false;
-    for (auto& p : fonts) if (!FT_New_Face(ft, p.c_str(), 0, &face)) { font = p; loaded = true; break; }
-    if (!loaded) die("cannot load font: " + font);
-    CW = adv(BIG);
+    if (!onlyResults) {  // results only: no font, no rendering
+        if (FT_Init_FreeType(&ft)) die("freetype");
+        vector<string> fonts = {font};
+        if (!fontGiven)
+            for (const char* p : {"/usr/share/fonts/opentype/urw-base35/NimbusMonoPS-Regular.otf",
+                                  "/usr/share/fonts/truetype/freefont/FreeMono.ttf",
+                                  "/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf",
+                                  "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"}) fonts.push_back(p);
+        bool loaded = false;
+        for (auto& p : fonts) if (!FT_New_Face(ft, p.c_str(), 0, &face)) { font = p; loaded = true; break; }
+        if (!loaded) die("cannot load font: " + font);
+        CW = adv(BIG);
+    }
     ifstream f(in); if (!f) die("cannot open " + in);
     regex re(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?([0-9 ,]*[0-9,])\s*(\+|-|\*|x|×|−|/|:|÷)\s*([0-9 ,]*[0-9,])\s*$)");
-    vector<Scene> scenes; string l; smatch m;
+    vector<Scene> scenes; vector<string> results; string l; smatch m;
     bool latexBlock = false; string latexEnv;
     while (getline(f, l)) {
         if (!l.empty() && l.back() == '\r') l.pop_back();
@@ -752,6 +790,7 @@ int main(int argc, char** argv) {
                     die("mismatched \\end{" + env + "}, expected \\end{" + latexEnv + "}");
                 latexBlock = false; latexEnv.clear(); continue;
             }
+            if (onlyResults) { results.push_back(body); continue; }  // latex as-is
             if (body.size() >= 2 && body.front() == '$' && body.back() == '$') body = body.substr(1, body.size() - 2);
             scenes.push_back(formula(body));
             fprintf(stderr, "ok (latex): %.100s\n", body.c_str());
@@ -762,6 +801,7 @@ int main(int argc, char** argv) {
         bool math = body.find('\\') != string::npos || body.front() == '$' ||
                     body.find("≈") != string::npos || body.find("≤") != string::npos || body.find("≥") != string::npos;
         if (math) {
+            if (onlyResults) { results.push_back(body); continue; }  // latex as-is
             if (body.size() >= 2 && body.front() == '$' && body.back() == '$') body = body.substr(1, body.size() - 2);
             scenes.push_back(formula(body));
             fprintf(stderr, "ok (math): %.100s\n", body.c_str());
@@ -771,11 +811,19 @@ int main(int argc, char** argv) {
             die("cannot parse: " + l + "\n  (wrap it in \\begin{latex} ... \\end{latex} to render it as maths)");
         Num a = parse(m[2]), b = parse(m[4]); string op = m[3], name = m[1];
         name.erase(remove_if(name.begin(), name.end(), [](unsigned char c) { return isspace(c); }), name.end());
+        if (onlyResults) {
+            results.push_back(computeValue(a, b, op));
+            continue;
+        }
         scenes.push_back(op == "+" ? addsub(a, b, true, name) : op == "-" || op == "−" ? addsub(a, b, false, name)
                          : op == "/" || op == ":" || op == "÷" ? divide(a, b, op, name) : mul(a, b, name));
         fprintf(stderr, "ok (bc agrees): %.100s\n", l.c_str());
     }
     if (latexBlock) die("unterminated \\begin" + (latexEnv.empty() ? string() : "{" + latexEnv + "}") + " block");
+    if (onlyResults) {
+        for (auto& r : results) printf("%s\n", r.c_str());
+        return 0;
+    }
     if (any_of(scenes.begin(), scenes.end(), [](auto& s) { return !s.name.empty(); })) scenes.push_back(summary(scenes));
     vector<double> boost(scenes.size(), 1);
     double weighted = 0, maxBoost = 1;

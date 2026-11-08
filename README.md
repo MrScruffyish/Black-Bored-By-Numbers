@@ -37,9 +37,11 @@ make
 ```sh
 ./board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--font PATH] [--encoder h264_nvenc]
                          [--camera fit|follow] [--zoom-lead S] [--auto-speed R] [--max-auto-speed X] [--dry]
+                         [--only-show-results]
 ```
 
-Both the input file and the output file are required. The output may also be
+Both the input file and the output file are required, except with
+`--only-show-results` where no output file is needed. The output may also be
 given with `-o out.mp4`. For example:
 
 ```sh
@@ -47,6 +49,10 @@ given with `-o out.mp4`. For example:
 ```
 
 - `--dry` parses the input and verifies the arithmetic without rendering.
+- `--only-show-results` parses the input, computes each arithmetic result and
+  prints just the numeric values to stdout, one per line, in input order.
+  Formula lines are printed unchanged. Nothing is rendered, so no output file,
+  font or `ffmpeg` is needed.
 - `--speed` scales the animation speed (larger is faster).
 - `--minutes` instead targets a total video length.
 - `--camera fit` (default) keeps the camera fixed at the origin and only zooms
