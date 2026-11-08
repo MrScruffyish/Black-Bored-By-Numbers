@@ -110,6 +110,16 @@ float autoSpeed(const Scene& sc) {
     if (AUTO_SPEED <= 0 || sc.s.empty()) return 1;
     return min(max(1.f, MAX_AUTO_SPEED), powf(max(1.f, fitZoom(sc)), AUTO_SPEED));
 }
+// "\begin" / "\begin{name}" and "\end" / "\end{name}" mark a block that is
+// always rendered as maths, even when its lines look like arithmetic.
+bool latexMarker(const string& s, const string& cmd, string& env) {
+    if (s == cmd) { env.clear(); return true; }
+    if (s.compare(0, cmd.size() + 1, cmd + "{") == 0 && s.back() == '}') {
+        env = s.substr(cmd.size() + 1, s.size() - cmd.size() - 2);
+        return true;
+    }
+    return false;
+}
 // variable name with LaTeX-style index: b_{i+1}, x_1
 float writeName(Scene& sc, const string& n, float x, float y) {
     auto p = n.find('_');
@@ -251,6 +261,7 @@ struct MathParser {
         return v;
     }
     MathSeq parseArg() {
+        while (!eof() && isspace((unsigned char)peek())) i++;  // x_ 2 == x_2
         if (peek() == '{') return parseGroup();
         MathSeq v; v.push_back(parseBase()); return v;
     }
@@ -303,7 +314,10 @@ struct MathParser {
         while (!eof() && peek() != '}') {
             if (stopRight && at("\\right")) break;
             MathAtom a = parseBase();
-            while (peek() == '_' || peek() == '^') {
+            for (;;) {
+                size_t save = i;
+                while (!eof() && isspace((unsigned char)peek())) i++;  // allow x _ 2
+                if (peek() != '_' && peek() != '^') { i = save; break; }
                 char c = s[i++]; MathSeq arg = parseArg();
                 if (c == '_') { a.sub = arg; a.hasSub = true; }
                 else { a.sup = arg; a.hasSup = true; }
@@ -724,12 +738,27 @@ int main(int argc, char** argv) {
     if (!loaded) die("cannot load font: " + font);
     CW = adv(BIG);
     ifstream f(in); if (!f) die("cannot open " + in);
-    regex re(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:_(?:\{[^}]*\}|[A-Za-z0-9]))?)\s*=\s*)?([0-9 ,]*[0-9,])\s*(\+|-|\*|x|×|−|/|:|÷)\s*([0-9 ,]*[0-9,])\s*$)");
+    regex re(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?([0-9 ,]*[0-9,])\s*(\+|-|\*|x|×|−|/|:|÷)\s*([0-9 ,]*[0-9,])\s*$)");
     vector<Scene> scenes; string l; smatch m;
+    bool latexBlock = false; string latexEnv;
     while (getline(f, l)) {
         if (!l.empty() && l.back() == '\r') l.pop_back();
         auto p = l.find_first_not_of(" \t"); if (p == string::npos || l[p] == '#') continue;
         string body = l.substr(p, l.find_last_not_of(" \t") - p + 1);
+        string env;
+        if (latexBlock) {
+            if (latexMarker(body, "\\end", env)) {
+                if (!latexEnv.empty() && !env.empty() && env != latexEnv)
+                    die("mismatched \\end{" + env + "}, expected \\end{" + latexEnv + "}");
+                latexBlock = false; latexEnv.clear(); continue;
+            }
+            if (body.size() >= 2 && body.front() == '$' && body.back() == '$') body = body.substr(1, body.size() - 2);
+            scenes.push_back(formula(body));
+            fprintf(stderr, "ok (latex): %.100s\n", body.c_str());
+            continue;
+        }
+        if (latexMarker(body, "\\begin", env)) { latexBlock = true; latexEnv = env; continue; }
+        if (latexMarker(body, "\\end", env)) die("unexpected \\end without matching \\begin");
         bool math = body.find('\\') != string::npos || body.front() == '$' ||
                     body.find("≈") != string::npos || body.find("≤") != string::npos || body.find("≥") != string::npos;
         if (math) {
@@ -738,12 +767,15 @@ int main(int argc, char** argv) {
             fprintf(stderr, "ok (math): %.100s\n", body.c_str());
             continue;
         }
-        if (!regex_match(l, m, re)) die("cannot parse: " + l);
+        if (!regex_match(l, m, re))
+            die("cannot parse: " + l + "\n  (wrap it in \\begin{latex} ... \\end{latex} to render it as maths)");
         Num a = parse(m[2]), b = parse(m[4]); string op = m[3], name = m[1];
+        name.erase(remove_if(name.begin(), name.end(), [](unsigned char c) { return isspace(c); }), name.end());
         scenes.push_back(op == "+" ? addsub(a, b, true, name) : op == "-" || op == "−" ? addsub(a, b, false, name)
                          : op == "/" || op == ":" || op == "÷" ? divide(a, b, op, name) : mul(a, b, name));
         fprintf(stderr, "ok (bc agrees): %.100s\n", l.c_str());
     }
+    if (latexBlock) die("unterminated \\begin" + (latexEnv.empty() ? string() : "{" + latexEnv + "}") + " block");
     if (any_of(scenes.begin(), scenes.end(), [](auto& s) { return !s.name.empty(); })) scenes.push_back(summary(scenes));
     vector<double> boost(scenes.size(), 1);
     double weighted = 0, maxBoost = 1;

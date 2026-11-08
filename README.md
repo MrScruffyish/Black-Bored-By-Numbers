@@ -70,7 +70,7 @@ given with `-o out.mp4`. For example:
 
 Input is one operation per line. Decimal comma and spaces as thousands
 separators are supported, as are `+ - * x × − / : ÷` and optional variable
-names with a LaTeX-style index:
+names with a LaTeX-style index (`x_2`, `x_ 2`, `q_{i+1}`):
 
 ```text
 s = 1 234,5 + 678,75
@@ -88,5 +88,20 @@ formulas instead. A small LaTeX subset is supported: `\frac{}{}`, `\sqrt{}`,
 π \approx 3,141 6
 x_{n+1} = \frac{1}{2}\left(x_n + \frac{N}{x_n}\right)
 ```
+
+To force one or more lines to be rendered as formulas without being parsed as
+arithmetic operations, wrap them in `\begin`/`\end`. The environment name is
+optional, and if both markers have one they must match:
+
+```text
+\begin{latex}
+x_ 2 = 2,3333 / 2
+\frac{a}{b} = \sqrt{x}
+\end{latex}
+```
+
+Each non-empty line inside the block becomes its own formula scene; the
+`\begin`/`\end` markers themselves are not rendered. Blank lines and comments
+are ignored, and the contents are not checked against `bc`.
 
 See `examples.txt` for a complete example.
