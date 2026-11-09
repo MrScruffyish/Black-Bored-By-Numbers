@@ -497,13 +497,16 @@ string fmt(const string& s) {  // "12345.6789" -> "12 345,678 9"
     return r;
 }
 string fmtNum(const Num& n) { return fmt(bcform(n)); }
-string bc(const string& expr) {
+string bcRaw(const string& expr) {  // bc output without norm(), so errors are distinguishable from 0
     char path[] = "/tmp/board_bcXXXXXX"; int fd = mkstemp(path); if (fd < 0) die("mkstemp");
     string in = "scale=10000\n" + expr + "\nquit\n"; if (write(fd, in.data(), in.size()) < 0) die("write"); close(fd);
     FILE* p = popen(("BC_LINE_LENGTH=0 bc -q " + string(path)).c_str(), "r"); string out; char buf[65536]; size_t n;
     while ((n = fread(buf, 1, sizeof buf, p)) > 0) out.append(buf, n);
-    pclose(p); unlink(path); return norm(out);
+    pclose(p); unlink(path);
+    while (!out.empty() && isspace((unsigned char)out.back())) out.pop_back();
+    return out;
 }
+string bc(const string& expr) { return norm(bcRaw(expr)); }
 
 // column grid: exponent e -> x of the digit cell; comma slot between e=0 and e=-1; gap every 3 digits
 struct Grid {
@@ -803,8 +806,9 @@ string computeSqrtValue(const Num& n, int sqrtDigits) {
 // The optional --expand preprocessor turns a few small directives into ordinary
 // input lines.  It is deliberately textual: \let stores a number, ${NAME}
 // substitutes it, \calc renders one arithmetic line while remembering its
-// displayed result, and \repeat ... \endrepeat repeats a block (optionally
-// applying a per-iteration div_digits).
+// displayed result, \repeat ... \endrepeat repeats a block (optionally
+// applying a per-iteration div_digits), and \if{...} ... \else ... \endif
+// selects a block after evaluating a numeric comparison with bc.
 const regex ARITH_RE(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?([0-9 .,]*[0-9,.])\s*(\+|-|\*|x|×|−|/|:|÷)\s*([0-9 .,]*[0-9,.])\s*$)");
 const regex SQRT_RE(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?sqrt\s*\{\s*([0-9 .,]*[0-9,.])\s*\}\s*$)");
 const regex VAR_RE(R"([A-Za-z][A-Za-z0-9_]*)");
@@ -968,6 +972,47 @@ struct Expander {
         die("line " + to_string(lineNo) + ": \\repeat without matching \\endrepeat");
         return in.size();
     }
+    string parseIf(const string& body, int lineNo) {
+        if (body.size() < 5 || body.compare(0, 4, "\\if{") != 0)
+            die("line " + to_string(lineNo) + ": \\if needs a condition: \\if{...}");
+        int depth = 0; size_t close = string::npos;
+        for (size_t j = 3; j < body.size(); j++) {
+            if (body[j] == '{') depth++;
+            else if (body[j] == '}' && --depth == 0) { close = j; break; }
+        }
+        if (close == string::npos) die("line " + to_string(lineNo) + ": missing '}' in \\if{...}");
+        if (!trimStr(body.substr(close + 1)).empty())
+            die("line " + to_string(lineNo) + ": unexpected text after \\if{...}");
+        string cond = trimStr(body.substr(4, close - 4));
+        if (cond.empty()) die("line " + to_string(lineNo) + ": empty \\if condition");
+        return cond;
+    }
+    bool evalCondition(const string& cond, int lineNo) {
+        string c = substVars(cond, vars, lineNo);
+        for (char& ch : c) if (ch == ',') ch = '.';
+        string r = bcRaw("(" + c + ")");
+        if (r == "1") return true;
+        if (r == "0") return false;
+        die("line " + to_string(lineNo) + ": cannot evaluate \\if condition: " + c);
+        return false;
+    }
+    struct IfParts { size_t elsePos = string::npos, endPos = string::npos; };
+    IfParts matchingIf(const vector<ExpandLine>& in, size_t start, int lineNo) {
+        int depth = 1; IfParts p;
+        for (size_t j = start; j < in.size(); j++) {
+            string b = trimStr(in[j].text);
+            if (b.empty() || b[0] == '#') continue;
+            if (b.compare(0, 3, "\\if") == 0) depth++;
+            else if (b == "\\endif") {
+                if (--depth == 0) { p.endPos = j; return p; }
+            } else if (b == "\\else" && depth == 1) {
+                if (p.elsePos != string::npos) die("line " + to_string(lineNo) + ": duplicate \\else");
+                p.elsePos = j;
+            }
+        }
+        die("line " + to_string(lineNo) + ": \\if without matching \\endif");
+        return p;
+    }
     void block(const vector<ExpandLine>& in, size_t& i, int loopDiv) {
         while (i < in.size()) {
             string l = in[i].text;
@@ -975,7 +1020,23 @@ struct Expander {
             size_t p = l.find_first_not_of(" \t");
             if (p == string::npos || l[p] == '#') { out.push_back(l); i++; continue; }
             string body = trimStr(l);
+            if (body == "\\else") die("line " + to_string(lineNo) + ": unexpected \\else");
+            if (body == "\\endif") die("line " + to_string(lineNo) + ": unexpected \\endif");
             if (startsWithWord(body, "\\endrepeat")) die("line " + to_string(lineNo) + ": unexpected \\endrepeat");
+            if (body.compare(0, 3, "\\if") == 0) {
+                string cond = parseIf(body, lineNo);
+                IfParts parts = matchingIf(in, i + 1, lineNo);
+                size_t thenBegin = i + 1, thenEnd = parts.elsePos != string::npos ? parts.elsePos : parts.endPos;
+                size_t elseBegin = parts.elsePos != string::npos ? parts.elsePos + 1 : parts.endPos;
+                bool truth = evalCondition(cond, lineNo);
+                vector<ExpandLine> branch;
+                if (truth) branch.assign(in.begin() + thenBegin, in.begin() + thenEnd);
+                else branch.assign(in.begin() + elseBegin, in.begin() + parts.endPos);
+                size_t bi = 0;
+                block(branch, bi, loopDiv);
+                i = parts.endPos + 1;
+                continue;
+            }
             if (startsWithWord(body, "\\repeat")) {
                 RepeatHeader h = parseRepeat(body, lineNo, vars);
                 size_t bodyStart = i + 1, bodyEnd = matchingEnd(in, bodyStart, lineNo);
