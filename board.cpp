@@ -799,6 +799,112 @@ string computeSqrtValue(const Num& n, int sqrtDigits) {
     return mine;
 }
 
+// ---------------- input expander ----------------
+// The optional --expand preprocessor turns a few small directives into ordinary
+// input lines.  It is deliberately textual: \let stores a number, ${NAME}
+// substitutes it, and \calc renders one arithmetic line while remembering its
+// displayed result.
+const regex ARITH_RE(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?([0-9 .,]*[0-9,.])\s*(\+|-|\*|x|×|−|/|:|÷)\s*([0-9 .,]*[0-9,.])\s*$)");
+const regex SQRT_RE(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?sqrt\s*\{\s*([0-9 .,]*[0-9,.])\s*\}\s*$)");
+const regex VAR_RE(R"([A-Za-z][A-Za-z0-9_]*)");
+const regex LABEL_RE(R"(\s+label\s*=\s*([A-Za-z][A-Za-z0-9_]*)\s*$)");
+
+string trimStr(const string& s) {
+    size_t a = s.find_first_not_of(" \t");
+    if (a == string::npos) return "";
+    size_t b = s.find_last_not_of(" \t");
+    return s.substr(a, b - a + 1);
+}
+bool startsWithWord(const string& s, const string& w) {
+    return s.compare(0, w.size(), w) == 0 && (s.size() == w.size() || isspace((unsigned char)s[w.size()]));
+}
+string displayNumber(const Num& n) {
+    string s = bcform(n);
+    for (char& c : s) if (c == '.') c = ',';  // no thousand separators, keep the decimal comma
+    return s;
+}
+string substVars(const string& s, const map<string, string>& vars, int lineNo) {
+    string r; size_t i = 0;
+    while (i < s.size()) {
+        if (s[i] == '$' && i + 1 < s.size() && s[i + 1] == '{') {
+            int depth = 1; size_t j = i + 2;
+            while (j < s.size() && depth) {
+                if (s[j] == '{') depth++;
+                else if (s[j] == '}') depth--;
+                if (depth) j++;
+            }
+            if (depth) die("line " + to_string(lineNo) + ": missing '}' in ${...}");
+            string name = trimStr(s.substr(i + 2, j - (i + 2)));
+            auto it = vars.find(name);
+            if (it == vars.end()) die("line " + to_string(lineNo) + ": undefined variable: " + name);
+            r += it->second;
+            i = j + 1;
+        } else r += s[i++];
+    }
+    return r;
+}
+vector<string> expandLines(const vector<string>& in) {
+    map<string, string> vars;
+    vector<string> out;
+    for (size_t k = 0; k < in.size(); k++) {
+        int lineNo = (int)k + 1;
+        string l = in[k];
+        size_t p = l.find_first_not_of(" \t");
+        if (p == string::npos || l[p] == '#') { out.push_back(l); continue; }  // blank/comment
+        string body = trimStr(l);
+        if (startsWithWord(body, "\\let")) {
+            string rest = trimStr(body.substr(4));
+            size_t eq = rest.find('=');
+            if (eq == string::npos) die("line " + to_string(lineNo) + ": \\let needs NAME = VALUE");
+            string name = trimStr(rest.substr(0, eq)), val = trimStr(rest.substr(eq + 1));
+            if (!regex_match(name, VAR_RE))
+                die("line " + to_string(lineNo) + ": invalid variable name: " + name);
+            if (val.empty()) die("line " + to_string(lineNo) + ": \\let needs a value");
+            Num n = parse(substVars(val, vars, lineNo));
+            vars[name] = displayNumber(n);
+            continue;
+        }
+        if (startsWithWord(body, "\\calc")) {
+            string work = substVars(trimStr(body.substr(5)), vars, lineNo);
+            Meta meta; string label;
+            for (;;) {  // accept \meta and label= in either order
+                bool changed = false;
+                Meta m = takeMeta(work);
+                if (m.divDigits >= 0) {
+                    if (meta.divDigits >= 0) die("line " + to_string(lineNo) + ": duplicate meta command: \\meta div_digits");
+                    meta.divDigits = m.divDigits; changed = true;
+                }
+                if (m.sqrtDigits >= 0) {
+                    if (meta.sqrtDigits >= 0) die("line " + to_string(lineNo) + ": duplicate meta command: \\meta sqrt_digits");
+                    meta.sqrtDigits = m.sqrtDigits; changed = true;
+                }
+                smatch lm;
+                if (regex_search(work, lm, LABEL_RE)) {
+                    if (!label.empty()) die("line " + to_string(lineNo) + ": duplicate label");
+                    label = lm[1]; work = lm.prefix().str(); changed = true;
+                }
+                if (!changed) break;
+            }
+            work = trimStr(work);
+            smatch am;
+            if (!regex_match(work, am, ARITH_RE))
+                die("line " + to_string(lineNo) + ": cannot parse \\calc: " + work);
+            string shown = am[1], op = am[3];
+            Num a = parse(am[2]), b = parse(am[4]);
+            shown.erase(remove_if(shown.begin(), shown.end(), [](unsigned char c) { return isspace(c); }), shown.end());
+            string store = label.empty() ? shown : label;
+            if (!store.empty()) vars[store] = computeValue(a, b, op, meta.divDigits);
+            string metaSuffix;
+            if (meta.divDigits >= 0) metaSuffix += " \\meta div_digits=" + to_string(meta.divDigits);
+            if (meta.sqrtDigits >= 0) metaSuffix += " \\meta sqrt_digits=" + to_string(meta.sqrtDigits);
+            out.push_back(work + metaSuffix);
+            continue;
+        }
+        out.push_back(substVars(body, vars, lineNo));
+    }
+    return out;
+}
+
 Scene summary(const vector<Scene>& scenes) {
     Scene sc; sc.text("Summary", 60, 30, TITLE, 20); float y = 140;
     for (auto& s : scenes) if (!s.name.empty()) { float x = writeName(sc, s.name, 100, y); sc.text(" = " + s.value, x, y, TITLE, 15); y += 100; }
@@ -931,13 +1037,14 @@ void render(Scene& sc, FILE* out, long& frameNo, long totalFrames) {
 int main(int argc, char** argv) {
     string in, out, enc = "libx264", font = "/usr/share/fonts/truetype/msttcorefonts/cour.ttf";
     bool fontGiven = false;
-    double minutes = 0, speed = 1; bool dry = false, onlyResults = false;
+    double minutes = 0, speed = 1; bool dry = false, onlyResults = false, expand = false;
     for (int i = 1; i < argc; i++) {
         string a = argv[i];
         if (a == "-o") { if (++i == argc) die("-o requires an output file"); out = argv[i]; }
         else if (a == "--minutes") minutes = atof(argv[++i]);
         else if (a == "--speed") speed = atof(argv[++i]); else if (a == "--encoder") enc = argv[++i];
         else if (a == "--decimals") DECIMALS = atoi(argv[++i]); else if (a == "--dry") dry = true;
+        else if (a == "--expand") expand = true;
         else if (a == "--only-show-results") onlyResults = true;
         else if (a == "--font") { if (++i == argc) die("--font requires a path"); font = argv[i]; fontGiven = true; }
         else if (a == "--camera") {
@@ -954,7 +1061,7 @@ int main(int argc, char** argv) {
         else if (out.empty()) out = a;
         else die("unexpected argument: " + a);
     }
-    if (in.empty() || (!onlyResults && out.empty())) die("usage: board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--font PATH] [--encoder h264_nvenc] [--camera fit|follow] [--zoom-lead S] [--auto-speed R] [--max-auto-speed X] [--dry] [--only-show-results]\n       out.mp4 may be omitted with --only-show-results");
+    if (in.empty() || (!onlyResults && out.empty())) die("usage: board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--font PATH] [--encoder h264_nvenc] [--camera fit|follow] [--zoom-lead S] [--auto-speed R] [--max-auto-speed X] [--expand] [--dry] [--only-show-results]\n       out.mp4 may be omitted with --only-show-results");
     AUTO_SPEED = max(0.f, AUTO_SPEED); MAX_AUTO_SPEED = max(1.f, MAX_AUTO_SPEED); ZOOM_LEAD = max(0.05f, ZOOM_LEAD);
     if (!onlyResults) {  // results only: no font, no rendering
         if (FT_Init_FreeType(&ft)) die("freetype");
@@ -970,14 +1077,19 @@ int main(int argc, char** argv) {
         CW = adv(BIG);
     }
     ifstream f(in); if (!f) die("cannot open " + in);
-    regex re(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?([0-9 .,]*[0-9,.])\s*(\+|-|\*|x|×|−|/|:|÷)\s*([0-9 .,]*[0-9,.])\s*$)");
-    regex reSqrt(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?sqrt\s*\{\s*([0-9 .,]*[0-9,.])\s*\}\s*$)");
-    vector<Scene> scenes; vector<string> results; string l; smatch m;
+    vector<string> inputLines; string line;
+    while (getline(f, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        inputLines.push_back(line);
+    }
+    if (expand) inputLines = expandLines(inputLines);
+    vector<Scene> scenes; vector<string> results; smatch m;
     bool latexBlock = false; string latexEnv;
-    while (getline(f, l)) {
-        if (!l.empty() && l.back() == '\r') l.pop_back();
+    for (string l : inputLines) {
         auto p = l.find_first_not_of(" \t"); if (p == string::npos || l[p] == '#') continue;
         string body = l.substr(p, l.find_last_not_of(" \t") - p + 1);
+        if (!expand && (startsWithWord(body, "\\let") || startsWithWord(body, "\\calc")))
+            die("\\let and \\calc require --expand: " + body);
         Meta meta = takeMeta(body);
         if (body.empty()) die("meta command needs an operation on the same line: " + l);
         string env;
@@ -1004,7 +1116,7 @@ int main(int argc, char** argv) {
             fprintf(stderr, "ok (math): %.100s\n", body.c_str());
             continue;
         }
-        if (regex_match(body, m, reSqrt)) {
+        if (regex_match(body, m, SQRT_RE)) {
             Num n = parse(m[2]); string name = m[1];
             name.erase(remove_if(name.begin(), name.end(), [](unsigned char c) { return isspace(c); }), name.end());
             if (onlyResults) {
@@ -1015,7 +1127,7 @@ int main(int argc, char** argv) {
             fprintf(stderr, "ok (sqrt): %.100s\n", body.c_str());
             continue;
         }
-        if (!regex_match(body, m, re))
+        if (!regex_match(body, m, ARITH_RE))
             die("cannot parse: " + body + "\n  (wrap it in \\begin{latex} ... \\end{latex} to render it as maths)");
         Num a = parse(m[2]), b = parse(m[4]); string op = m[3], name = m[1];
         name.erase(remove_if(name.begin(), name.end(), [](unsigned char c) { return isspace(c); }), name.end());
