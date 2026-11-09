@@ -697,8 +697,8 @@ Scene sqrtScene(const Num& n, const string& name, int sqrtDigits) {
     int P_int = sr.intDigits, P = (int)sr.steps.size();
     int maxDiv = 1;
     for (auto& st : sr.steps) maxDiv = max(maxDiv, (int)st.divisor.size());
-    float divRight = 200 + maxDiv * CW + ((maxDiv - 1) / 3) * GAP, barX = divRight + 25;
-    float x0 = barX + 30, PGAP = GAP * 0.6f;
+    float divRight = 200 + maxDiv * CW + ((maxDiv - 1) / 3) * GAP, barX = divRight + CW;
+    float x0 = barX + CW, PGAP = GAP * 0.6f;
     auto pairX = [&](int i) { return x0 + i * (2 * CW + PGAP); };
     auto unitExp = [&](int i) { return i < P_int ? 2 * (P_int - 1 - i) : -2 * (i - P_int) - 2; };
     auto cellX = [&](int e) {  // exponent -> x, relative to the radicand's units digit
