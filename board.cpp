@@ -807,8 +807,10 @@ string computeSqrtValue(const Num& n, int sqrtDigits) {
 // input lines.  It is deliberately textual: \let stores a number, ${NAME}
 // substitutes it, \calc renders one arithmetic line while remembering its
 // displayed result, \repeat ... \endrepeat repeats a block (optionally
-// applying a per-iteration div_digits), and \if{...} ... \else ... \endif
-// selects a block after evaluating a numeric comparison with bc.
+// applying a per-iteration div_digits), \if{...} ... \else ... \endif
+// selects a block after evaluating a numeric comparison with bc, and
+// \begin{algorithm}{title} ... \end{algorithm} adds a formula title and a
+// variable scope.
 const regex ARITH_RE(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?([0-9 .,]*[0-9,.])\s*(\+|-|\*|x|×|−|/|:|÷)\s*([0-9 .,]*[0-9,.])\s*$)");
 const regex SQRT_RE(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?sqrt\s*\{\s*([0-9 .,]*[0-9,.])\s*\}\s*$)");
 const regex VAR_RE(R"([A-Za-z][A-Za-z0-9_]*)");
@@ -1013,6 +1015,31 @@ struct Expander {
         die("line " + to_string(lineNo) + ": \\if without matching \\endif");
         return p;
     }
+    string parseAlgorithm(const string& body, int lineNo) {
+        string rest = trimStr(body.substr(17));  // \begin{algorithm}
+        if (rest.empty()) return "";
+        if (rest.front() != '{') die("line " + to_string(lineNo) + ": expected {title} after \\begin{algorithm}");
+        int depth = 0; size_t close = string::npos;
+        for (size_t j = 0; j < rest.size(); j++) {
+            if (rest[j] == '{') depth++;
+            else if (rest[j] == '}' && --depth == 0) { close = j; break; }
+        }
+        if (close == string::npos) die("line " + to_string(lineNo) + ": missing '}' in algorithm title");
+        if (!trimStr(rest.substr(close + 1)).empty())
+            die("line " + to_string(lineNo) + ": unexpected text after algorithm title");
+        return trimStr(rest.substr(1, close - 1));
+    }
+    size_t matchingAlgorithm(const vector<ExpandLine>& in, size_t start, int lineNo) {
+        int depth = 1;
+        for (size_t j = start; j < in.size(); j++) {
+            string b = trimStr(in[j].text);
+            if (b.empty() || b[0] == '#') continue;
+            if (b.compare(0, 17, "\\begin{algorithm}") == 0) depth++;
+            else if (b == "\\end{algorithm}" && --depth == 0) return j;
+        }
+        die("line " + to_string(lineNo) + ": \\begin{algorithm} without matching \\end{algorithm}");
+        return in.size();
+    }
     void block(const vector<ExpandLine>& in, size_t& i, int loopDiv) {
         while (i < in.size()) {
             string l = in[i].text;
@@ -1022,7 +1049,24 @@ struct Expander {
             string body = trimStr(l);
             if (body == "\\else") die("line " + to_string(lineNo) + ": unexpected \\else");
             if (body == "\\endif") die("line " + to_string(lineNo) + ": unexpected \\endif");
+            if (body == "\\end{algorithm}") die("line " + to_string(lineNo) + ": unexpected \\end{algorithm}");
             if (startsWithWord(body, "\\endrepeat")) die("line " + to_string(lineNo) + ": unexpected \\endrepeat");
+            if (body.compare(0, 17, "\\begin{algorithm}") == 0) {
+                string title = substVars(parseAlgorithm(body, lineNo), vars, lineNo);
+                size_t bodyStart = i + 1, bodyEnd = matchingAlgorithm(in, bodyStart, lineNo);
+                vector<ExpandLine> bodyLines(in.begin() + bodyStart, in.begin() + bodyEnd);
+                if (!title.empty()) {  // a formula title, not arithmetic
+                    out.push_back("\\begin{latex}");
+                    out.push_back(title);
+                    out.push_back("\\end{latex}");
+                }
+                auto saved = vars;
+                size_t bi = 0;
+                block(bodyLines, bi, loopDiv);
+                vars = saved;  // an algorithm gets its own variable scope
+                i = bodyEnd + 1;
+                continue;
+            }
             if (body.compare(0, 3, "\\if") == 0) {
                 string cond = parseIf(body, lineNo);
                 IfParts parts = matchingIf(in, i + 1, lineNo);
@@ -1253,6 +1297,8 @@ int main(int argc, char** argv) {
         string body = l.substr(p, l.find_last_not_of(" \t") - p + 1);
         if (!expand && (startsWithWord(body, "\\let") || startsWithWord(body, "\\calc")))
             die("\\let and \\calc require --expand: " + body);
+        if (!expand && body.compare(0, 17, "\\begin{algorithm}") == 0)
+            die("algorithm blocks require --expand: " + body);
         Meta meta = takeMeta(body);
         if (body.empty()) die("meta command needs an operation on the same line: " + l);
         string env;
