@@ -716,9 +716,8 @@ Scene sqrtScene(const Num& n, const string& name, int sqrtDigits) {
         }
     };
     float yRoot = sc.top, yRad = yRoot + RH + 10;
-    float yBottom = yRad + (P - 1) * (2 * RH - 5) + 120;
     sc.line(barX, yRad + 12, pairX(P - 1) + 2 * CW, yRad + 12, 6);  // radical overline
-    sc.line(barX, yRad + 12, barX, yBottom, 4);                     // division bar
+    sc.line(barX, yRad + 120, barX, yRad + 12, 4);                  // short division bar
     for (int i = 0; i < P; i++) {
         int t, u; pairDigits(i, t, u);
         if (t >= 0) sc.big('0' + t, pairX(i), yRad);
