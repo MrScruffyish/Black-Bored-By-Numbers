@@ -802,8 +802,9 @@ string computeSqrtValue(const Num& n, int sqrtDigits) {
 // ---------------- input expander ----------------
 // The optional --expand preprocessor turns a few small directives into ordinary
 // input lines.  It is deliberately textual: \let stores a number, ${NAME}
-// substitutes it, and \calc renders one arithmetic line while remembering its
-// displayed result.
+// substitutes it, \calc renders one arithmetic line while remembering its
+// displayed result, and \repeat ... \endrepeat repeats a block (optionally
+// applying a per-iteration div_digits).
 const regex ARITH_RE(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?([0-9 .,]*[0-9,.])\s*(\+|-|\*|x|×|−|/|:|÷)\s*([0-9 .,]*[0-9,.])\s*$)");
 const regex SQRT_RE(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?sqrt\s*\{\s*([0-9 .,]*[0-9,.])\s*\}\s*$)");
 const regex VAR_RE(R"([A-Za-z][A-Za-z0-9_]*)");
@@ -843,15 +844,67 @@ string substVars(const string& s, const map<string, string>& vars, int lineNo) {
     }
     return r;
 }
-vector<string> expandLines(const vector<string>& in) {
+int parseCount(const string& s, int lineNo, const string& what) {
+    if (s.empty()) die("line " + to_string(lineNo) + ": expected " + what);
+    char* end = nullptr;
+    long v = strtol(s.c_str(), &end, 10);
+    if (!end || *end || v < 0 || v > INT_MAX)
+        die("line " + to_string(lineNo) + ": invalid " + what + ": " + s);
+    return (int)v;
+}
+struct ExpandLine { string text; int no; };
+struct RepeatHeader {
+    string var;
+    int start = 0, end = 0;
+    vector<int> digits;  // optional per-iteration div_digits; one value repeats for all
+};
+RepeatHeader parseRepeat(const string& body, int lineNo, const map<string, string>& vars) {
+    string rest = substVars(trimStr(body.substr(7)), vars, lineNo);  // \repeat
+    static const regex re(R"(^([A-Za-z][A-Za-z0-9_]*)\s*=\s*([0-9]+)\s*\.\.\s*([0-9]+)\s*(.*)$)");
+    smatch m;
+    if (!regex_match(rest, m, re))
+        die("line " + to_string(lineNo) + ": \\repeat needs NAME = START..END [digits ...]");
+    RepeatHeader h; h.var = m[1];
+    h.start = parseCount(m[2], lineNo, "repeat start");
+    h.end = parseCount(m[3], lineNo, "repeat end");
+    if (h.start > h.end) die("line " + to_string(lineNo) + ": \\repeat start is after its end");
+    string tail = trimStr(m[4]);
+    if (!tail.empty()) {
+        if (startsWithWord(tail, "digits")) tail = trimStr(tail.substr(6));
+        if (!tail.empty() && tail.front() == '[') {
+            if (tail.back() != ']') die("line " + to_string(lineNo) + ": missing ']' in \\repeat digits");
+            tail = trimStr(tail.substr(1, tail.size() - 2));
+        }
+        string cur;
+        auto flush = [&] {
+            if (!cur.empty()) { h.digits.push_back(parseCount(cur, lineNo, "repeat digit count")); cur.clear(); }
+        };
+        for (char c : tail) {
+            if (c == ' ' || c == '\t' || c == ',') flush();
+            else cur += c;
+        }
+        flush();
+    }
+    int count = h.end - h.start + 1;
+    if (!h.digits.empty() && h.digits.size() != 1 && (int)h.digits.size() != count)
+        die("line " + to_string(lineNo) + ": \\repeat has " + to_string(h.digits.size()) +
+            " digit counts for " + to_string(count) + " iterations");
+    return h;
+}
+struct Expander {
     map<string, string> vars;
     vector<string> out;
-    for (size_t k = 0; k < in.size(); k++) {
-        int lineNo = (int)k + 1;
-        string l = in[k];
-        size_t p = l.find_first_not_of(" \t");
-        if (p == string::npos || l[p] == '#') { out.push_back(l); continue; }  // blank/comment
-        string body = trimStr(l);
+    string applyLoopDiv(const string& body, int loopDiv) {
+        if (loopDiv < 0) return body;
+        smatch m;
+        if (!regex_match(body, m, ARITH_RE)) return body;
+        string op = m[3];
+        if (op != "/" && op != ":" && op != "÷") return body;
+        string copy = body;
+        if (takeMeta(copy).divDigits >= 0) return body;  // an explicit \meta wins
+        return body + " \\meta div_digits=" + to_string(loopDiv);
+    }
+    void processLine(const string& body, int lineNo, int loopDiv) {
         if (startsWithWord(body, "\\let")) {
             string rest = trimStr(body.substr(4));
             size_t eq = rest.find('=');
@@ -862,7 +915,7 @@ vector<string> expandLines(const vector<string>& in) {
             if (val.empty()) die("line " + to_string(lineNo) + ": \\let needs a value");
             Num n = parse(substVars(val, vars, lineNo));
             vars[name] = displayNumber(n);
-            continue;
+            return;
         }
         if (startsWithWord(body, "\\calc")) {
             string work = substVars(trimStr(body.substr(5)), vars, lineNo);
@@ -891,6 +944,8 @@ vector<string> expandLines(const vector<string>& in) {
                 die("line " + to_string(lineNo) + ": cannot parse \\calc: " + work);
             string shown = am[1], op = am[3];
             Num a = parse(am[2]), b = parse(am[4]);
+            bool isDiv = op == "/" || op == ":" || op == "÷";
+            if (isDiv && meta.divDigits < 0 && loopDiv >= 0) meta.divDigits = loopDiv;
             shown.erase(remove_if(shown.begin(), shown.end(), [](unsigned char c) { return isspace(c); }), shown.end());
             string store = label.empty() ? shown : label;
             if (!store.empty()) vars[store] = computeValue(a, b, op, meta.divDigits);
@@ -898,12 +953,59 @@ vector<string> expandLines(const vector<string>& in) {
             if (meta.divDigits >= 0) metaSuffix += " \\meta div_digits=" + to_string(meta.divDigits);
             if (meta.sqrtDigits >= 0) metaSuffix += " \\meta sqrt_digits=" + to_string(meta.sqrtDigits);
             out.push_back(work + metaSuffix);
-            continue;
+            return;
         }
-        out.push_back(substVars(body, vars, lineNo));
+        out.push_back(applyLoopDiv(substVars(body, vars, lineNo), loopDiv));
     }
-    return out;
-}
+    size_t matchingEnd(const vector<ExpandLine>& in, size_t start, int lineNo) {
+        int depth = 1;
+        for (size_t j = start; j < in.size(); j++) {
+            string b = trimStr(in[j].text);
+            if (b.empty() || b[0] == '#') continue;
+            if (startsWithWord(b, "\\repeat")) depth++;
+            else if (startsWithWord(b, "\\endrepeat") && --depth == 0) return j;
+        }
+        die("line " + to_string(lineNo) + ": \\repeat without matching \\endrepeat");
+        return in.size();
+    }
+    void block(const vector<ExpandLine>& in, size_t& i, int loopDiv) {
+        while (i < in.size()) {
+            string l = in[i].text;
+            int lineNo = in[i].no;
+            size_t p = l.find_first_not_of(" \t");
+            if (p == string::npos || l[p] == '#') { out.push_back(l); i++; continue; }
+            string body = trimStr(l);
+            if (startsWithWord(body, "\\endrepeat")) die("line " + to_string(lineNo) + ": unexpected \\endrepeat");
+            if (startsWithWord(body, "\\repeat")) {
+                RepeatHeader h = parseRepeat(body, lineNo, vars);
+                size_t bodyStart = i + 1, bodyEnd = matchingEnd(in, bodyStart, lineNo);
+                vector<ExpandLine> bodyLines(in.begin() + bodyStart, in.begin() + bodyEnd);
+                auto old = vars.find(h.var);
+                bool had = old != vars.end();
+                string saved = had ? old->second : "";
+                for (int v = h.start; v <= h.end; v++) {
+                    vars[h.var] = to_string(v);
+                    int d = h.digits.empty() ? loopDiv : (h.digits.size() == 1 ? h.digits[0] : h.digits[v - h.start]);
+                    size_t bi = 0;
+                    block(bodyLines, bi, d);
+                }
+                if (had) vars[h.var] = saved; else vars.erase(h.var);
+                i = bodyEnd + 1;
+                continue;
+            }
+            processLine(body, lineNo, loopDiv);
+            i++;
+        }
+    }
+    vector<string> run(const vector<string>& in) {
+        vector<ExpandLine> lines;
+        for (size_t k = 0; k < in.size(); k++) lines.push_back({in[k], (int)k + 1});
+        size_t i = 0;
+        block(lines, i, -1);
+        return out;
+    }
+};
+vector<string> expandLines(const vector<string>& in) { Expander e; return e.run(in); }
 
 Scene summary(const vector<Scene>& scenes) {
     Scene sc; sc.text("Summary", 60, 30, TITLE, 20); float y = 140;
