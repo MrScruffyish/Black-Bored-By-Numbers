@@ -36,8 +36,8 @@ make
 
 ```sh
 ./board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--font PATH] [--encoder h264_nvenc]
-                         [--camera fit|follow] [--zoom-lead S] [--auto-speed R] [--max-auto-speed X] [--dry]
-                         [--only-show-results]
+                         [--camera fit|follow] [--zoom-lead S] [--auto-speed R] [--max-auto-speed X]
+                         [--expand] [--dry] [--only-show-results]
 ```
 
 Both the input file and the output file are required, except with
@@ -49,6 +49,9 @@ given with `-o out.mp4`. For example:
 ```
 
 - `--dry` parses the input and verifies the arithmetic without rendering.
+- `--expand` enables the small algorithm preprocessor described under
+  "Algorithms and the expander". Without it, `\let`, `\calc`, `\repeat`,
+  `\if` and `\begin{algorithm}` are not interpreted.
 - `--only-show-results` parses the input, computes each arithmetic result and
   prints just the numeric values to stdout, one per line, in input order,
   without thousand separators (the decimal comma is kept). Formula lines are
@@ -145,4 +148,68 @@ Each non-empty line inside the block becomes its own formula scene; the
 `\begin`/`\end` markers themselves are not rendered. Blank lines and comments
 are ignored, and the contents are not checked against `bc`.
 
-See `examples.txt` for a complete example.
+## Algorithms and the expander
+
+Hand-writing every intermediate line of an algorithm is tedious. With
+`--expand`, a few directives are expanded into ordinary arithmetic and formula
+lines before anything is rendered. The directives are textual, so the normal
+parser still checks every arithmetic line against `bc`.
+
+`\let NAME = VALUE` defines a numeric variable. `VALUE` may use either decimal
+separator and may contain `${NAME}` references. Values are stored without
+thousand separators and with a decimal comma. `${NAME}` substitutes a variable
+anywhere in a later line, including inside math formulas. The `$` in `${...}`
+is independent of the `$...$` math delimiters: `$N = ${N}$` expands to
+`$N = 2$` before the formula is parsed.
+
+`\calc [NAME =] A OP B [label=VAR] [\meta ...]` renders one arithmetic line and
+stores its displayed result. If the left-hand side `NAME` is present it is both
+shown and used as the variable name; `label=VAR` stores under `VAR` instead (or
+when there is no shown name). For example:
+
+```text
+\let N = 2
+\let x = 1
+\calc q = ${N} / ${x} \meta div_digits=2
+\calc s = ${x} + ${q}
+\calc x = ${s} / 2 label=x
+$x_1 = ${x}$
+```
+
+`\repeat VAR = START..END [digits d1 d2 ...] ... \endrepeat` repeats a block.
+`${VAR}` is the current iteration number. The optional digit list sets
+`div_digits` for division lines in that iteration (one value for all
+iterations, or one per iteration); an explicit `\meta div_digits=N` on a line
+still wins. The loop variable is restored after the loop.
+
+`\if{CONDITION} ... \else ... \endif` chooses a block at expansion time. The
+condition is a numeric comparison evaluated with `bc`; both `,` and `.` work as
+the decimal separator, and the usual operators `< <= > >= == !=` (also `=` and
+`<>`) are available. Blocks may be nested.
+
+`\begin{algorithm}{TITLE} ... \end{algorithm}` renders `TITLE` as a formula
+scene and gives the body its own variable scope: variables defined or changed
+inside do not leak out. The title is optional.
+
+A complete Newton–Raphson example:
+
+```text
+\let N = 2
+\let x = 1
+\begin{algorithm}{Newton-Raphson for ${N}}
+\repeat k = 1..4 digits 2 4 8 16
+\calc q = ${N} / ${x}
+\calc s = ${x} + ${q}
+\calc x = ${s} / 2 label=x
+$x_${k} = ${x}$
+\endrepeat
+\end{algorithm}
+```
+
+Run it with `./board examples-expand.txt out.mp4 --expand`. With
+`--only-show-results --expand`, the expanded arithmetic lines print their
+numeric results and formula lines print unchanged (the algorithm title is a
+formula line).
+
+See `examples.txt` for a complete arithmetic example and
+`examples-expand.txt` for the algorithm example above.

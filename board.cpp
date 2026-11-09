@@ -992,7 +992,15 @@ struct Expander {
     bool evalCondition(const string& cond, int lineNo) {
         string c = substVars(cond, vars, lineNo);
         for (char& ch : c) if (ch == ',') ch = '.';
-        string r = bcRaw("(" + c + ")");
+        string n;  // accept "=" and "<>" as comparisons too
+        for (size_t i = 0; i < c.size(); i++) {
+            if (c[i] == '<' && i + 1 < c.size() && c[i + 1] == '>') { n += "!="; i++; }
+            else if (c[i] == '=' &&
+                     (i == 0 || (c[i - 1] != '<' && c[i - 1] != '>' && c[i - 1] != '!' && c[i - 1] != '=')) &&
+                     (i + 1 >= c.size() || c[i + 1] != '=')) n += "==";
+            else n += c[i];
+        }
+        string r = bcRaw("(" + n + ")");
         if (r == "1") return true;
         if (r == "0") return false;
         die("line " + to_string(lineNo) + ": cannot evaluate \\if condition: " + c);
@@ -1295,10 +1303,11 @@ int main(int argc, char** argv) {
     for (string l : inputLines) {
         auto p = l.find_first_not_of(" \t"); if (p == string::npos || l[p] == '#') continue;
         string body = l.substr(p, l.find_last_not_of(" \t") - p + 1);
-        if (!expand && (startsWithWord(body, "\\let") || startsWithWord(body, "\\calc")))
-            die("\\let and \\calc require --expand: " + body);
-        if (!expand && body.compare(0, 17, "\\begin{algorithm}") == 0)
-            die("algorithm blocks require --expand: " + body);
+        if (!expand && (startsWithWord(body, "\\let") || startsWithWord(body, "\\calc") ||
+                        startsWithWord(body, "\\repeat") || startsWithWord(body, "\\endrepeat") ||
+                        body.compare(0, 3, "\\if") == 0 || body == "\\else" || body == "\\endif" ||
+                        body.compare(0, 17, "\\begin{algorithm}") == 0 || body == "\\end{algorithm}"))
+            die("this directive requires --expand: " + body);
         Meta meta = takeMeta(body);
         if (body.empty()) die("meta command needs an operation on the same line: " + l);
         string env;
