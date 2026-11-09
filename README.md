@@ -76,8 +76,9 @@ given with `-o out.mp4`. For example:
   `0,002`. Integer digits are always kept in full. A per-line
   `\meta div_digits=N` overrides this (see below).
 
-Input is one operation per line. Decimal comma and spaces as thousands
-separators are supported, as are `+ - * x × − / : ÷` and optional variable
+Input is one operation per line. A decimal comma or a decimal point may be
+used (e.g. `1,5` or `1.5`), and spaces may be used as thousands separators.
+The operators `+ - * x × − / : ÷` are supported, as are optional variable
 names with a LaTeX-style index (`x_2`, `x_ 2`, `q_{i+1}`):
 
 ```text

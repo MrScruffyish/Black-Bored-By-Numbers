@@ -392,8 +392,15 @@ int sigDigits(const Num& n) { Big t = n.d; trim(t); return t.size(); }  // digit
 
 
 Num parse(string s) {
-    Num n; s.erase(remove(s.begin(), s.end(), ' '), s.end());
-    auto p = s.find(','); string i = s.substr(0, p), f = p == string::npos ? "" : s.substr(p + 1);
+    Num n; s.erase(remove_if(s.begin(), s.end(), [](unsigned char c) { return isspace(c); }), s.end());
+    size_t dot = s.find('.'), com = s.find(',');
+    if (dot != string::npos && com != string::npos)
+        die("ambiguous number (use either a decimal comma or a decimal point): " + s);
+    size_t p = dot != string::npos ? dot : com;  // decimal separator, '.' or ','
+    for (size_t k = 0; k < s.size(); k++)
+        if (k != p && !isdigit((unsigned char)s[k])) die("invalid number: " + s);
+    if (p == 0 && s.size() == 1) die("invalid number: " + s);
+    string i = s.substr(0, p), f = p == string::npos ? "" : s.substr(p + 1);
     i.erase(0, min(i.find_first_not_of('0'), i.size())); if (i.empty()) i = "0";
     n.dec = f.size(); string all = i + f;
     for (auto it = all.rbegin(); it != all.rend(); ++it) n.d.push_back(*it - '0');
@@ -963,8 +970,8 @@ int main(int argc, char** argv) {
         CW = adv(BIG);
     }
     ifstream f(in); if (!f) die("cannot open " + in);
-    regex re(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?([0-9 ,]*[0-9,])\s*(\+|-|\*|x|×|−|/|:|÷)\s*([0-9 ,]*[0-9,])\s*$)");
-    regex reSqrt(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?sqrt\s*\{\s*([0-9 ,]*[0-9,])\s*\}\s*$)");
+    regex re(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?([0-9 .,]*[0-9,.])\s*(\+|-|\*|x|×|−|/|:|÷)\s*([0-9 .,]*[0-9,.])\s*$)");
+    regex reSqrt(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?sqrt\s*\{\s*([0-9 .,]*[0-9,.])\s*\}\s*$)");
     vector<Scene> scenes; vector<string> results; string l; smatch m;
     bool latexBlock = false; string latexEnv;
     while (getline(f, l)) {
