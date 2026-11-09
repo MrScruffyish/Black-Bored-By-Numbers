@@ -9,7 +9,9 @@
 #include <unistd.h>
 using namespace std;
 
-const int W = 1280, H = 720, FPS = 30, BIG = 110, SMALL = 50, TITLE = 72;
+int W = 1280, H = 720;  // output frame size; 1280x720 is the default
+const int FPS = 30, BIG = 110, SMALL = 50, TITLE = 72;
+float SCALE = 1;        // scene scale relative to the 1280x720 design
 const float RH = 135, GAP = 28, INF = 1e30f, CAM_MARGIN = 100;
 const unsigned char CHALK[3] = {238, 242, 236}, GREEN[3] = {34, 72, 50};
 int DECIMALS = -1;  // optional cap on quotient decimals; -1 = only the 2*max(A,B) rule
@@ -25,6 +27,28 @@ float MAX_AUTO_SPEED = 8; // cap for the automatic speed-up factor
 FT_Library ft; FT_Face face;
 
 [[noreturn]] void die(const string& m) { fprintf(stderr, "error: %s\n", m.c_str()); exit(1); }
+
+// Video size presets.  A custom "WxH" value is accepted too.
+bool parseFormat(const string& f, int& w, int& h) {
+    static const map<string, pair<int, int>> presets = {
+        {"360p", {640, 360}},    {"480p", {854, 480}},
+        {"720p", {1280, 720}},   {"1080p", {1920, 1080}},
+        {"1440p", {2560, 1440}}, {"2160p", {3840, 2160}},
+        {"4k", {3840, 2160}},
+    };
+    string key = f;
+    for (char& c : key) c = (char)tolower((unsigned char)c);
+    auto it = presets.find(key);
+    if (it != presets.end()) { w = it->second.first; h = it->second.second; return true; }
+    int n = 0;
+    if (sscanf(key.c_str(), "%dx%d%n", &w, &h, &n) == 2 && n == (int)key.size() && w > 0 && h > 0) return true;
+    return false;
+}
+void setVideoSize(int w, int h) {
+    W = max(2, (w + 1) & ~1);  // yuv420p needs even dimensions
+    H = max(2, (h + 1) & ~1);
+    SCALE = min(W / 1280.0f, H / 720.0f);
+}
 
 // ---------------- glyphs ----------------
 struct Glyph { int w, h, left, top; vector<uint8_t> a; };
@@ -81,7 +105,7 @@ struct Scene {
     vector<Stroke> s; float T = 0, top = 260, titleEnd = 0; string name, value;
     size_t glyphs(const u32string& t, float x, float y, int size, float per, float pause) {
         size_t first = s.size(); float a = adv(size);
-        for (char32_t c : t) { if (c != ' ') { s.push_back({T, per, INF, x, y, 0, 0, size, c}); T += per; } x += a; }
+        for (char32_t c : t) { if (c != ' ') { s.push_back({T, per, INF, x * SCALE, y * SCALE, 0, 0, max(1, (int)lround(size * SCALE)), c}); T += per; } x += a; }
         T += pause; return first;
     }
     float text(const string& t, float x, float y, int size = TITLE, float pause = 0) {
@@ -90,12 +114,12 @@ struct Scene {
     size_t small(const string& t, float cx, float y, float pause = 3) {
         return glyphs(u32(t), cx - adv(SMALL) * t.size() / 2, y, SMALL, 3, pause); }
     void line(float x1, float y1, float x2, float y2, float pause = 6) {
-        float d = min(60.f, max(4.f, fabsf(x2 - x1) / 40)); s.push_back({T, d, INF, x1, y1, x2, y2, 0, 0}); T += d + pause; }
+        float d = min(60.f, max(4.f, fabsf(x2 - x1) / 40)); s.push_back({T, d, INF, x1 * SCALE, y1 * SCALE, x2 * SCALE, y2 * SCALE, 0, 0}); T += d + pause; }
     void erase(size_t from, size_t to) { for (size_t i = from; i < to; i++) s[i].te = T; }
     void pause(float n) { T += n; }
 };
 array<float, 4> bbox(const Stroke& k) {
-    if (!k.size) return {min(k.x, k.x2) - 4, min(k.y, k.y2) - 4, max(k.x, k.x2) + 4, max(k.y, k.y2) + 4};
+    if (!k.size) return {min(k.x, k.x2) - 4 * SCALE, min(k.y, k.y2) - 4 * SCALE, max(k.x, k.x2) + 4 * SCALE, max(k.y, k.y2) + 4 * SCALE};
     const Glyph& g = glyph(k.size, k.ch);
     float x = k.x + g.left, y = k.y + asc(k.size) - g.top;
     return {x, y, x + max(g.w, 1), y + max(g.h, 1)};
@@ -104,7 +128,7 @@ array<float, 4> bbox(const Stroke& k) {
 float fitZoom(const Scene& sc) {
     float mx = 0, my = 0;
     for (auto& k : sc.s) { auto b = bbox(k); mx = max(mx, b[2]); my = max(my, b[3]); }
-    return max({1.f, (mx + 120) / (W - CAM_MARGIN), (my + 120) / (H - CAM_MARGIN)});
+    return max({1.f, (mx + 120 * SCALE) / (W - CAM_MARGIN * SCALE), (my + 120 * SCALE) / (H - CAM_MARGIN * SCALE)});
 }
 float autoSpeed(const Scene& sc) {
     if (AUTO_SPEED <= 0 || sc.s.empty()) return 1;
@@ -1139,12 +1163,12 @@ void render(Scene& sc, FILE* out, long& frameNo, long totalFrames) {
     vector<array<float, 4>> BB(S.size());
     unordered_map<uint64_t, vector<uint32_t>> buckets;
     for (uint32_t i = 0; i < S.size(); i++) {
-        auto b = BB[i] = bbox(S[i]); BW = max(BW, b[2] + 120); BH = max(BH, b[3] + 120);
+        auto b = BB[i] = bbox(S[i]); BW = max(BW, b[2] + 120 * SCALE); BH = max(BH, b[3] + 120 * SCALE);
         for (int bx = max(0.f, b[0]) / BK; bx <= (int)max(0.f, b[2]) / BK; bx++)
             for (int by = max(0.f, b[1]) / BK; by <= (int)max(0.f, b[3]) / BK; by++) buckets[(uint64_t)bx << 32 | by].push_back(i);
     }
     vector<long> stamp(S.size(), -1); vector<float> acc(W * H); vector<uint8_t> fr(W * H * 3);
-    const float M = CAM_MARGIN, WIN = 60, zmax = max({1.f, BW / W, BH / H}) * 1.05f;
+    const float M = CAM_MARGIN * SCALE, WIN = 60, zmax = max({1.f, BW / W, BH / H}) * 1.05f;
     float zc = 1, cam[2] = {0, 0}, tgt[2] = {0, 0}, bnd[2] = {BW, BH}; bool first = true;
     array<float, 4> act{0, 0, (float)W, (float)H}; size_t wa = 0, wb = 0, nextB = 0;
     auto pen = [&](const Stroke& k, float f) { float p = k.dur < 1e-6f ? 1 : clamp((f - k.t0 + 1) / k.dur, 0.f, 1.f);
@@ -1159,7 +1183,7 @@ void render(Scene& sc, FILE* out, long& frameNo, long totalFrames) {
             while (nextB < S.size() && S[nextB].t0 <= f) {
                 mx = max(mx, BB[nextB][2]); my = max(my, BB[nextB][3]); nextB++;
             }
-            zfit[f] = max({1.f, (mx + 120) / (W - M), (my + 120) / (H - M)});
+            zfit[f] = max({1.f, (mx + 120 * SCALE) / (W - M), (my + 120 * SCALE) / (H - M)});
         }
         // Ease towards the future requirement (a backwards exponential average).
         // The result is monotone, always at least the current requirement, and
@@ -1170,7 +1194,7 @@ void render(Scene& sc, FILE* out, long& frameNo, long totalFrames) {
         for (long f = nF - 1; f >= 0; f--) { z = a * z + (1 - a) * zfit[f]; zfit[f] = max(z, zfit[f]); }
     }
     for (long f = 0; f < nF; f++, frameNo++) {
-        float vw[2] = {W, H};
+        float vw[2] = {(float)W, (float)H};
         if (fitCam) {
             // --- camera: fixed at the origin, zoom out only ---
             zc = zfit[f]; cam[0] = cam[1] = 0;
@@ -1183,7 +1207,7 @@ void render(Scene& sc, FILE* out, long& frameNo, long totalFrames) {
                 act = {INF, INF, -INF, -INF};
                 for (size_t i = wa; i < wb; i++) {
                     array<float, 4> b = BB[i];
-                    if (!S[i].size) { auto [px, py] = pen(S[i], f); b = {px - 4, py - 4, px + 4, py + 4}; }
+                    if (!S[i].size) { auto [px, py] = pen(S[i], f); b = {px - 4 * SCALE, py - 4 * SCALE, px + 4 * SCALE, py + 4 * SCALE}; }
                     act = {min(act[0], b[0]), min(act[1], b[1]), max(act[2], b[2]), max(act[3], b[3])};
                 }
             }
@@ -1227,7 +1251,7 @@ void render(Scene& sc, FILE* out, long& frameNo, long totalFrames) {
                     } else {
                         auto [ex, ey] = pen(k, f);
                         float x1 = (k.x - cam[0]) * iz, y1 = (k.y - cam[1]) * iz, x2 = (ex - cam[0]) * iz, y2 = (ey - cam[1]) * iz;
-                        float hw = 3 * iz, al = 1; if (hw < 0.5f) { al = hw * 2; hw = 0.5f; }
+                        float hw = 3 * SCALE * iz, al = 1; if (hw < 0.5f) { al = hw * 2; hw = 0.5f; }
                         float dx = x2 - x1, dy = y2 - y1, L2 = max(dx * dx + dy * dy, 1e-6f);
                         for (int sy = max(0, (int)floor(min(y1, y2) - hw)); sy <= min(H - 1, (int)ceil(max(y1, y2) + hw)); sy++)
                             for (int sx = max(0, (int)floor(min(x1, x2) - hw)); sx <= min(W - 1, (int)ceil(max(x1, x2) + hw)); sx++) {
@@ -1259,6 +1283,13 @@ int main(int argc, char** argv) {
         else if (a == "--minutes") minutes = atof(argv[++i]);
         else if (a == "--speed") speed = atof(argv[++i]); else if (a == "--encoder") enc = argv[++i];
         else if (a == "--decimals") DECIMALS = atoi(argv[++i]); else if (a == "--dry") dry = true;
+        else if (a == "--format") {
+            if (++i == argc) die("--format requires a preset (360p, 480p, 720p, 1080p, 1440p, 2160p) or WxH");
+            int w, h;
+            if (!parseFormat(argv[i], w, h))
+                die("unknown video format: " + string(argv[i]) + " (try 360p, 480p, 720p, 1080p, 1440p, 2160p or WxH)");
+            setVideoSize(w, h);
+        }
         else if (a == "--expand") expand = true;
         else if (a == "--show-expanded") showExpanded = true;
         else if (a == "--only-show-results") onlyResults = true;
@@ -1279,7 +1310,7 @@ int main(int argc, char** argv) {
     }
     if (showExpanded && onlyResults) die("--show-expanded and --only-show-results are mutually exclusive");
     if (showExpanded) expand = true;
-    if (in.empty() || (!onlyResults && !showExpanded && out.empty())) die("usage: board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--font PATH] [--encoder h264_nvenc] [--camera fit|follow] [--zoom-lead S] [--auto-speed R] [--max-auto-speed X] [--expand] [--show-expanded] [--dry] [--only-show-results]\n       out.mp4 may be omitted with --only-show-results or --show-expanded");
+    if (in.empty() || (!onlyResults && !showExpanded && out.empty())) die("usage: board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--font PATH] [--encoder h264_nvenc] [--format 360p|480p|720p|1080p|1440p|2160p|WxH] [--camera fit|follow] [--zoom-lead S] [--auto-speed R] [--max-auto-speed X] [--expand] [--show-expanded] [--dry] [--only-show-results]\n       out.mp4 may be omitted with --only-show-results or --show-expanded");
     AUTO_SPEED = max(0.f, AUTO_SPEED); MAX_AUTO_SPEED = max(1.f, MAX_AUTO_SPEED); ZOOM_LEAD = max(0.05f, ZOOM_LEAD);
     if (!onlyResults && !showExpanded) {  // results/expanded only: no font, no rendering
         if (FT_Init_FreeType(&ft)) die("freetype");
@@ -1389,7 +1420,7 @@ int main(int argc, char** argv) {
     fprintf(stderr, ")\n");
     if (dry) return 0;
     textures();
-    string cmd = "ffmpeg -y -loglevel error -f rawvideo -pix_fmt rgb24 -s 1280x720 -r 30 -i - -c:v " + enc +
+    string cmd = "ffmpeg -y -loglevel error -f rawvideo -pix_fmt rgb24 -s " + to_string(W) + "x" + to_string(H) + " -r " + to_string(FPS) + " -i - -c:v " + enc +
                  (enc == "libx264" ? " -preset veryfast -crf 20" : "") + " -pix_fmt yuv420p '" + out + "'";
     FILE* ff = popen(cmd.c_str(), "w"); if (!ff) die("ffmpeg");
     long n = 0; for (auto& s : scenes) { render(s, ff, n, frames); fprintf(stderr, "\nscene ends at %.1f s\n", n / (double)FPS); }

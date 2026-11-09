@@ -36,6 +36,7 @@ make
 
 ```sh
 ./board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--font PATH] [--encoder h264_nvenc]
+                         [--format 360p|480p|720p|1080p|1440p|2160p|WxH]
                          [--camera fit|follow] [--zoom-lead S] [--auto-speed R] [--max-auto-speed X]
                          [--expand] [--show-expanded] [--dry] [--only-show-results]
 ```
@@ -75,6 +76,13 @@ output may also be given with `-o out.mp4`. For example:
 - `--max-auto-speed X` caps that boost (default `8`). With `--minutes`, the
   automatic boost redistributes time between scenes but still targets the
   requested total length.
+- `--format NAME` sets the output resolution. Presets are `360p` (640x360),
+  `480p` (854x480), `720p` (1280x720, the default), `1080p` (1920x1080),
+  `1440p` (2560x1440) and `2160p`/`4k` (3840x2160). A custom `WxH` such as
+  `--format 1920x800` is also accepted. Odd dimensions are rounded up to the
+  next even value because the encoder uses yuv420p. The layout is scaled from
+  the 1280x720 design by the smaller of `W/1280` and `H/720`, so text keeps its
+  apparent size at higher resolutions.
 - `--decimals N` additionally caps the number of quotient decimals in division.
   By default the quotient keeps at most `2 * max(A, B)` significant decimals,
   where `A` and `B` are the digit counts of the operands (leading zeros
