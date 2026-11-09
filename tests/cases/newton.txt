@@ -1,0 +1,10 @@
+\let N = 2
+\let x = 1
+\begin{algorithm}{Newton-Raphson for ${N}}
+\repeat k = 1..4 digits 2 4 8 16
+\calc q = ${N} / ${x}
+\calc s = ${x} + ${q}
+\calc x = ${s} / 2 label=x
+$x_${k} = ${x}$
+\endrepeat
+\end{algorithm}

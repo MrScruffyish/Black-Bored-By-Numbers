@@ -1252,7 +1252,7 @@ void render(Scene& sc, FILE* out, long& frameNo, long totalFrames) {
 int main(int argc, char** argv) {
     string in, out, enc = "libx264", font = "/usr/share/fonts/truetype/msttcorefonts/cour.ttf";
     bool fontGiven = false;
-    double minutes = 0, speed = 1; bool dry = false, onlyResults = false, expand = false;
+    double minutes = 0, speed = 1; bool dry = false, onlyResults = false, expand = false, showExpanded = false;
     for (int i = 1; i < argc; i++) {
         string a = argv[i];
         if (a == "-o") { if (++i == argc) die("-o requires an output file"); out = argv[i]; }
@@ -1260,6 +1260,7 @@ int main(int argc, char** argv) {
         else if (a == "--speed") speed = atof(argv[++i]); else if (a == "--encoder") enc = argv[++i];
         else if (a == "--decimals") DECIMALS = atoi(argv[++i]); else if (a == "--dry") dry = true;
         else if (a == "--expand") expand = true;
+        else if (a == "--show-expanded") showExpanded = true;
         else if (a == "--only-show-results") onlyResults = true;
         else if (a == "--font") { if (++i == argc) die("--font requires a path"); font = argv[i]; fontGiven = true; }
         else if (a == "--camera") {
@@ -1276,9 +1277,11 @@ int main(int argc, char** argv) {
         else if (out.empty()) out = a;
         else die("unexpected argument: " + a);
     }
-    if (in.empty() || (!onlyResults && out.empty())) die("usage: board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--font PATH] [--encoder h264_nvenc] [--camera fit|follow] [--zoom-lead S] [--auto-speed R] [--max-auto-speed X] [--expand] [--dry] [--only-show-results]\n       out.mp4 may be omitted with --only-show-results");
+    if (showExpanded && onlyResults) die("--show-expanded and --only-show-results are mutually exclusive");
+    if (showExpanded) expand = true;
+    if (in.empty() || (!onlyResults && !showExpanded && out.empty())) die("usage: board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--font PATH] [--encoder h264_nvenc] [--camera fit|follow] [--zoom-lead S] [--auto-speed R] [--max-auto-speed X] [--expand] [--show-expanded] [--dry] [--only-show-results]\n       out.mp4 may be omitted with --only-show-results or --show-expanded");
     AUTO_SPEED = max(0.f, AUTO_SPEED); MAX_AUTO_SPEED = max(1.f, MAX_AUTO_SPEED); ZOOM_LEAD = max(0.05f, ZOOM_LEAD);
-    if (!onlyResults) {  // results only: no font, no rendering
+    if (!onlyResults && !showExpanded) {  // results/expanded only: no font, no rendering
         if (FT_Init_FreeType(&ft)) die("freetype");
         vector<string> fonts = {font};
         if (!fontGiven)
@@ -1298,6 +1301,10 @@ int main(int argc, char** argv) {
         inputLines.push_back(line);
     }
     if (expand) inputLines = expandLines(inputLines);
+    if (showExpanded) {
+        for (auto& l : inputLines) printf("%s\n", l.c_str());
+        return 0;
+    }
     vector<Scene> scenes; vector<string> results; smatch m;
     bool latexBlock = false; string latexEnv;
     for (string l : inputLines) {

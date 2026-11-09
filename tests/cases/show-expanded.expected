@@ -1,0 +1,8 @@
+q = 2 / 1 \meta div_digits=3
+s = 1 + 2
+x = 3 / 2 \meta div_digits=3
+$x_1 = 1,5$
+q = 2 / 1,5 \meta div_digits=5
+s = 1,5 + 1,3333
+x = 2,8333 / 2 \meta div_digits=5
+$x_2 = 1,4166$

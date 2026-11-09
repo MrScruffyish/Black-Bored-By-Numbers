@@ -37,12 +37,12 @@ make
 ```sh
 ./board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--font PATH] [--encoder h264_nvenc]
                          [--camera fit|follow] [--zoom-lead S] [--auto-speed R] [--max-auto-speed X]
-                         [--expand] [--dry] [--only-show-results]
+                         [--expand] [--show-expanded] [--dry] [--only-show-results]
 ```
 
 Both the input file and the output file are required, except with
-`--only-show-results` where no output file is needed. The output may also be
-given with `-o out.mp4`. For example:
+`--only-show-results` or `--show-expanded`, where no output file is needed. The
+output may also be given with `-o out.mp4`. For example:
 
 ```sh
 ./board examples.txt examples.mp4
@@ -52,6 +52,10 @@ given with `-o out.mp4`. For example:
 - `--expand` enables the small algorithm preprocessor described under
   "Algorithms and the expander". Without it, `\let`, `\calc`, `\repeat`,
   `\if` and `\begin{algorithm}` are not interpreted.
+- `--show-expanded` implies `--expand` and prints the expanded input lines to
+  stdout, one per line, then exits without rendering. This is useful for seeing
+  what `\let`, `\calc`, `\repeat`, `\if` and `${...}` produced. It cannot be
+  combined with `--only-show-results`.
 - `--only-show-results` parses the input, computes each arithmetic result and
   prints just the numeric values to stdout, one per line, in input order,
   without thousand separators (the decimal comma is kept). Formula lines are
@@ -213,3 +217,15 @@ formula line).
 
 See `examples.txt` for a complete arithmetic example and
 `examples-expand.txt` for the algorithm example above.
+
+## Tests
+
+```sh
+make test
+```
+
+This builds `board` and runs the regression cases in `tests/cases/`. Each case
+is a `NAME.txt` input with expected combined stdout/stderr in `NAME.expected`.
+An optional `NAME.args` file supplies extra flags (one per line), and
+`NAME.status` sets the expected exit status (default `0`). The tests use
+`--only-show-results` and `--show-expanded`, so they need no font or `ffmpeg`.

@@ -1,0 +1,9 @@
+# decimal comma and point, div_digits, sqrt_digits
+s = 1 234,5 + 678,75
+d = 5 002,3 - 87,65
+a = 4,71 * 13,6
+q = 9 175,5 / 25
+x = 1 / 3 \meta div_digits=10
+y = 1.5 / 0.5
+sqrt{2}
+sqrt{152,29} \meta sqrt_digits=6
