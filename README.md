@@ -272,9 +272,21 @@ is independent of the `$...$` math delimiters: `$N = ${N}$` expands to
 `$N = 2$` before the formula is parsed.
 
 `\calc [NAME =] A OP B [label=VAR] [\meta ...]` renders one arithmetic line and
-stores its displayed result. If the left-hand side `NAME` is present it is both
-shown and used as the variable name; `label=VAR` stores under `VAR` instead (or
-when there is no shown name). For example:
+stores its result as a variable. The left-hand side `NAME` is what appears on
+the board and, by default, is also the variable name. `label=VAR` stores the
+result under `VAR` instead. That is needed when the displayed name is not a
+plain variable name (for example a subscript such as `x_{k+1}`) or when there
+is no shown name at all:
+
+```text
+\calc x_{k+1} = ${s} / 2 label=x    # shows x_{k+1}, stores x
+\calc 10 + 5 label=total            # shows 10 + 5, stores total
+```
+
+`label=` and `\meta` may appear in either order, and two `label=` clauses on
+one line are an error. The stored value is the displayed, already-truncated
+result, so later `${...}` references see exactly what the viewer saw. For
+example:
 
 ```text
 \let N = 2
