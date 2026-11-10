@@ -22,8 +22,9 @@ int DECIMALS = -1;  // optional cap on quotient decimals; -1 = only the 2*max(A,
 // large (i.e. very small writing), since their details are not readable anyway.
 enum CamMode { CAM_FIT, CAM_FOLLOW } CAMERA = CAM_FIT;
 float ZOOM_LEAD = 0.6f;   // seconds of look-ahead when easing the zoom-out
-float AUTO_SPEED = 0.5f;  // speed-up exponent; 0 disables automatic speed-up
-float MAX_AUTO_SPEED = 8; // cap for the automatic speed-up factor
+float AUTO_SPEED = 0.5f;      // speed-up exponent; 0 disables automatic speed-up
+float MAX_AUTO_SPEED = 8;     // cap for the automatic speed-up factor
+double MAX_SCENE_SECONDS = 30; // no single scene runs longer than this; 0 disables
 FT_Library ft; FT_Face face;
 
 [[noreturn]] void die(const string& m) { fprintf(stderr, "error: %s\n", m.c_str()); exit(1); }
@@ -1276,7 +1277,7 @@ void render(Scene& sc, FILE* out, long& frameNo, long totalFrames) {
 int main(int argc, char** argv) {
     string in, out, enc = "libx264", font = "/usr/share/fonts/truetype/msttcorefonts/cour.ttf";
     bool fontGiven = false;
-    double minutes = 0, speed = 1; bool dry = false, onlyResults = false, expand = false, showExpanded = false;
+    double minutes = 0, speed = 1; bool dry = false, onlyResults = false, expand = false, showExpanded = false, stats = false;
     for (int i = 1; i < argc; i++) {
         string a = argv[i];
         if (a == "-o") { if (++i == argc) die("-o requires an output file"); out = argv[i]; }
@@ -1292,6 +1293,7 @@ int main(int argc, char** argv) {
         }
         else if (a == "--expand") expand = true;
         else if (a == "--show-expanded") showExpanded = true;
+        else if (a == "--stats") stats = true;
         else if (a == "--only-show-results") onlyResults = true;
         else if (a == "--font") { if (++i == argc) die("--font requires a path"); font = argv[i]; fontGiven = true; }
         else if (a == "--camera") {
@@ -1304,13 +1306,18 @@ int main(int argc, char** argv) {
         else if (a == "--zoom-lead") { if (++i == argc) die("--zoom-lead requires seconds"); ZOOM_LEAD = atof(argv[i]); }
         else if (a == "--auto-speed") { if (++i == argc) die("--auto-speed requires a value"); AUTO_SPEED = atof(argv[i]); }
         else if (a == "--max-auto-speed") { if (++i == argc) die("--max-auto-speed requires a value"); MAX_AUTO_SPEED = atof(argv[i]); }
+        else if (a == "--max-scene-seconds") {
+            if (++i == argc) die("--max-scene-seconds requires a value");
+            MAX_SCENE_SECONDS = atof(argv[i]);
+            if (MAX_SCENE_SECONDS < 0) die("--max-scene-seconds must be non-negative");
+        }
         else if (in.empty()) in = a;
         else if (out.empty()) out = a;
         else die("unexpected argument: " + a);
     }
     if (showExpanded && onlyResults) die("--show-expanded and --only-show-results are mutually exclusive");
     if (showExpanded) expand = true;
-    if (in.empty() || (!onlyResults && !showExpanded && out.empty())) die("usage: board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--font PATH] [--encoder h264_nvenc] [--format 360p|480p|720p|1080p|1440p|2160p|WxH] [--camera fit|follow] [--zoom-lead S] [--auto-speed R] [--max-auto-speed X] [--expand] [--show-expanded] [--dry] [--only-show-results]\n       out.mp4 may be omitted with --only-show-results or --show-expanded");
+    if (in.empty() || (!onlyResults && !showExpanded && !stats && out.empty())) die("usage: board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--font PATH] [--encoder h264_nvenc] [--format 360p|480p|720p|1080p|1440p|2160p|WxH] [--camera fit|follow] [--zoom-lead S] [--auto-speed R] [--max-auto-speed X] [--max-scene-seconds S] [--expand] [--show-expanded] [--stats] [--dry] [--only-show-results]\n       out.mp4 may be omitted with --only-show-results, --show-expanded or --stats");
     AUTO_SPEED = max(0.f, AUTO_SPEED); MAX_AUTO_SPEED = max(1.f, MAX_AUTO_SPEED); ZOOM_LEAD = max(0.05f, ZOOM_LEAD);
     if (!onlyResults && !showExpanded) {  // results/expanded only: no font, no rendering
         if (FT_Init_FreeType(&ft)) die("freetype");
@@ -1405,10 +1412,17 @@ int main(int argc, char** argv) {
     double weighted = 0, maxBoost = 1;
     for (size_t i = 0; i < scenes.size(); i++) {
         boost[i] = autoSpeed(scenes[i]);
+        // Long operations are unreadable anyway.  Compress each scene so that
+        // no single one exceeds MAX_SCENE_SECONDS, while short scenes keep
+        // their natural pace.  This is independent of --max-auto-speed.
+        if (MAX_SCENE_SECONDS > 0)
+            boost[i] = max(boost[i], (double)scenes[i].T / FPS / MAX_SCENE_SECONDS);
         maxBoost = max(maxBoost, boost[i]);
         weighted += scenes[i].T / boost[i];
     }
     double k = minutes > 0 ? minutes * 60 * FPS / max(weighted, 1e-9) : 1 / max(speed, 1e-9);
+    vector<double> rawT(scenes.size());
+    for (size_t i = 0; i < scenes.size(); i++) rawT[i] = scenes[i].T;
     long frames = 0;
     for (size_t i = 0; i < scenes.size(); i++) {
         double ks = k / boost[i];
@@ -1416,9 +1430,18 @@ int main(int argc, char** argv) {
         scenes[i].T *= ks; frames += (long)ceil(scenes[i].T) + 1;
     }
     fprintf(stderr, "video length %.1f min (%ld frames, time scale %.4g", frames / (60.0 * FPS), frames, k);
-    if (maxBoost > 1.001) fprintf(stderr, ", auto-speed up to %.2fx", maxBoost);
+    if (maxBoost > 1.001) fprintf(stderr, ", max scene boost %.2fx", maxBoost);
     fprintf(stderr, ")\n");
-    if (dry) return 0;
+    if (stats) {
+        fprintf(stderr, "scene  strokes     raw s     zoom    boost   final s\n");
+        for (size_t i = 0; i < scenes.size(); i++) {
+            double ks = k / boost[i];
+            fprintf(stderr, "%5zu %8zu %9.2f %8.2f %8.2f %9.2f%s\n", i, scenes[i].s.size(),
+                    rawT[i] / FPS, fitZoom(scenes[i]), boost[i], rawT[i] * ks / FPS,
+                    scenes[i].name.empty() ? "" : ("  " + scenes[i].name).c_str());
+        }
+    }
+    if (dry || stats) return 0;
     textures();
     string cmd = "ffmpeg -y -loglevel error -f rawvideo -pix_fmt rgb24 -s " + to_string(W) + "x" + to_string(H) + " -r " + to_string(FPS) + " -i - -c:v " + enc +
                  (enc == "libx264" ? " -preset veryfast -crf 20" : "") + " -pix_fmt yuv420p '" + out + "'";

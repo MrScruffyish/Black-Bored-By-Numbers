@@ -38,12 +38,13 @@ make
 ./board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--font PATH] [--encoder h264_nvenc]
                          [--format 360p|480p|720p|1080p|1440p|2160p|WxH]
                          [--camera fit|follow] [--zoom-lead S] [--auto-speed R] [--max-auto-speed X]
-                         [--expand] [--show-expanded] [--dry] [--only-show-results]
+                         [--max-scene-seconds S] [--expand] [--show-expanded] [--stats] [--dry]
+                         [--only-show-results]
 ```
 
 Both the input file and the output file are required, except with
-`--only-show-results` or `--show-expanded`, where no output file is needed. The
-output may also be given with `-o out.mp4`. For example:
+`--only-show-results`, `--show-expanded` or `--stats`, where no output file is
+needed. The output may also be given with `-o out.mp4`. For example:
 
 ```sh
 ./board examples.txt examples.mp4
@@ -62,8 +63,11 @@ output may also be given with `-o out.mp4`. For example:
   without thousand separators (the decimal comma is kept). Formula lines are
   printed unchanged. Nothing is rendered, so no output file, font or `ffmpeg`
   is needed.
-- `--speed` scales the animation speed (larger is faster).
-- `--minutes` instead targets a total video length.
+- `--speed S` scales the whole timeline uniformly (`--speed 2` is twice as
+  fast). Use the per-scene options below when long operations should be sped up
+  more than short ones.
+- `--minutes M` instead targets a total video length, distributing the time
+  across scenes.
 - `--camera fit` (default) keeps the camera fixed at the origin and only zooms
   out until all writing fits. `--camera follow` restores the old behaviour that
   pans to follow recent writing.
@@ -72,10 +76,19 @@ output may also be given with `-o out.mp4`. For example:
 - `--auto-speed R` speeds up scenes whose final zoom is large, because very small
   writing (huge operands) is not readable in detail anyway. The boost is
   `finalZoom^R`, capped by `--max-auto-speed`, and applied on top of `--speed`.
-  Default `R = 0.5`; use `--auto-speed 0` to disable it.
-- `--max-auto-speed X` caps that boost (default `8`). With `--minutes`, the
-  automatic boost redistributes time between scenes but still targets the
-  requested total length.
+  Default `R = 0.5`; use `--auto-speed 0` to disable it. Larger `R` compresses
+  big scenes more aggressively.
+- `--max-auto-speed X` caps the zoom-based boost (default `8`). It does not
+  limit `--max-scene-seconds`.
+- `--max-scene-seconds S` guarantees that no single scene runs longer than `S`
+  seconds (default `30`; `0` disables the cap). Long operations are sped up
+  individually until they fit, while short scenes keep their natural pace. This
+  is the main control for stopping one huge division or square root from
+  dominating the video. It is applied before `--speed`/`--minutes`.
+- `--stats` prints a per-scene table (strokes, raw seconds, zoom, boost, final
+  seconds) and exits without rendering. This makes it easy to see which
+  operation is expensive and to tune the speed options. It needs a font but no
+  output file or `ffmpeg`.
 - `--format NAME` sets the output resolution. Presets are `360p` (640x360),
   `480p` (854x480), `720p` (1280x720, the default), `1080p` (1920x1080),
   `1440p` (2560x1440) and `2160p`/`4k` (3840x2160). A custom `WxH` such as
