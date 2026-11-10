@@ -104,6 +104,66 @@ needed. The output may also be given with `-o out.mp4`. For example:
   `0,002`. Integer digits are always kept in full. A per-line
   `\meta div_digits=N` overrides this (see below).
 
+### Controlling speed and length
+
+There are two levels of control:
+
+- `--speed` and `--minutes` scale the whole video.
+- `--auto-speed`, `--max-auto-speed` and `--max-scene-seconds` act per scene.
+  One expanded line (or one input line) is one scene.
+
+For a long algorithm, `--max-scene-seconds` is usually the option you want. It
+leaves short scenes at their natural pace and compresses only the operations
+that would otherwise run too long:
+
+```sh
+./board examples-expand.txt examples-expand.mp4 --expand --max-scene-seconds 10
+```
+
+For a 10-step Newton-Raphson run with 1024-digit precision, the default cap
+makes a huge difference:
+
+| Command | Video length |
+| --- | ---: |
+| `--expand` (default cap: 30 s per scene) | 12.9 min |
+| `--expand --max-scene-seconds 20` | 9.8 min |
+| `--expand --max-scene-seconds 10` | 5.9 min |
+| `--expand --max-scene-seconds 0` | 867.7 min |
+
+Use `--stats` to see where the time goes before rendering:
+
+```sh
+./board examples-expand.txt --expand --stats
+```
+
+It prints one row per scene and exits without rendering or needing an output
+file. A very long division can produce a row like this:
+
+```text
+scene  strokes     raw s     zoom    boost   final s
+   37   949153 301851.60   394.38 10061.72     30.00  q
+```
+
+`raw s` is the scene's natural duration, `boost` is the per-scene speed-up, and
+`final s` is its duration in the output video.
+
+To target a specific total length instead, use `--minutes`:
+
+```sh
+./board examples-expand.txt examples-expand.mp4 --expand --minutes 5
+```
+
+Combine it with `--max-scene-seconds` when you also want a per-scene upper
+bound. `--speed` is a simpler uniform multiplier:
+
+```sh
+./board examples.txt examples.mp4 --speed 2
+```
+
+The order is: zoom-based auto-speed, then the per-scene cap, then the global
+`--speed`/`--minutes` scale. Use `--auto-speed 0` to disable the zoom-based
+part, and `--max-scene-seconds 0` to disable the per-scene cap.
+
 Input is one operation per line. A decimal comma or a decimal point may be
 used (e.g. `1,5` or `1.5`), and spaces may be used as thousands separators.
 The operators `+ - * x × − / : ÷` are supported, as are optional variable
