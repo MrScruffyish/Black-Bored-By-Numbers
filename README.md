@@ -200,6 +200,11 @@ a = 4,71 * 13,6
 q_{i+1} = 9 175,5 / 25
 ```
 
+Long multiplication is drawn with the usual partial products. Leading zero
+digits are not drawn in those rows, so `0,0012 * 0,0012` shows `24` and `12`
+rather than rows of zeros; the result still shows the zeros its value needs
+(`0,00000144`).
+
 A meta command can be appended to the end of any line. It is stripped before
 parsing and applies to that line only, e.g.:
 

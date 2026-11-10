@@ -613,6 +613,13 @@ Scene addsub(Num a, Num b, bool plus, const string& name) {
 Scene mul(const Num& A, const Num& B, const string& name) {
     Scene sc = start(name, fmtNum(A) + " × " + fmtNum(B));
     int nA = A.d.size(), nB = B.d.size(), nres = nA + nB, D = A.dec + B.dec;
+    // Leading zero digits contribute nothing but would draw empty rows and
+    // columns of zeros.  Skip them in the partial products; the operands are
+    // still shown in full, and the result keeps its necessary fractional zeros.
+    int hiA = nA - 1, hiB = nB - 1;
+    while (hiA > 0 && !A.d[hiA]) hiA--;
+    while (hiB > 0 && !B.d[hiB]) hiB--;
+    int rows = hiB + 1;
     Grid g = Grid::leftAt(200 + 2 * CW, nres - 1 - D, 0);
     auto X = [&](int i) { return g.X(i - D); };  // i = integer digit position (result units = D)
     auto ys = [&](int r) { return sc.top + r * RH; };
@@ -621,23 +628,23 @@ Scene mul(const Num& A, const Num& B, const string& name) {
     float sx = X(max(nA, nB)) - CW * 0.6f, right = X(0) + CW;
     sc.big(U'×', sx, ys(1)); sc.line(sx, ys(1) + 125, right, ys(1) + 125, 10);
     vector<vector<int>> part(nB, vector<int>(nres, 0));
-    for (int j = 0; j < nB; j++) {
+    for (int j = 0; j <= hiB; j++) {
         int carry = 0; float y = ys(2 + j) + 15; size_t c0 = 0, c1 = 0;
-        for (int i = 0; i < nA; i++) {
+        for (int i = 0; i <= hiA; i++) {
             int v = A.d[i] * B.d[j] + carry; part[j][i + j] = v % 10; carry = v / 10;
             sc.big('0' + v % 10, X(i + j), y, 6);
             sc.erase(c0, c1); c0 = c1 = 0;  // carry used -> wipe it
-            if (carry && i < nA - 1) { c0 = sc.small(to_string(carry), X(i + j + 1) + CW / 2, y - 30, 8); c1 = sc.s.size(); }
+            if (carry && i < hiA) { c0 = sc.small(to_string(carry), X(i + j + 1) + CW / 2, y - 30, 8); c1 = sc.s.size(); }
         }
-        if (carry) { part[j][nA + j] = carry; sc.big('0' + carry, X(nA + j), y, 6); }
+        if (carry) { part[j][hiA + 1 + j] = carry; sc.big('0' + carry, X(hiA + 1 + j), y, 6); }
     }
     vector<int> res; float yr = ys(2) + 15;
-    if (nB > 1) {
-        float yl = ys(2 + nB) + 10; yr = yl + 20;
+    if (rows > 1) {
+        float yl = ys(2 + rows) + 10; yr = yl + 20;
         sc.line(sx, yl, right, yl, 10);
         long carry = 0; size_t c0 = 0, c1 = 0;
         for (int e = 0; e < nres || carry; e++) {
-            long v = carry; for (int j = 0; j < nB; j++) v += e < nres ? part[j][e] : 0;
+            long v = carry; for (int j = 0; j <= hiB; j++) v += e < nres ? part[j][e] : 0;
             if (e >= nres - 1 && v == 0 && !carry) break;
             res.push_back(v % 10); carry = v / 10;
             sc.big('0' + v % 10, X(e), yr, 6); sc.erase(c0, c1); c0 = c1 = 0;
