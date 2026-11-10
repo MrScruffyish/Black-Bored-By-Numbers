@@ -7,6 +7,9 @@
 #include FT_FREETYPE_H
 #include <bits/stdc++.h>
 #include <unistd.h>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
 using namespace std;
 
 int W = 1280, H = 720;  // output frame size; 1280x720 is the default
@@ -25,6 +28,7 @@ float ZOOM_LEAD = 0.6f;   // seconds of look-ahead when easing the zoom-out
 float AUTO_SPEED = 0.5f;      // speed-up exponent; 0 disables automatic speed-up
 float MAX_AUTO_SPEED = 8;     // cap for the automatic speed-up factor
 double MAX_SCENE_SECONDS = 30; // no single scene runs longer than this; 0 disables
+int THREADS = 0;               // render threads; 0 = automatic, 1 = serial
 FT_Library ft; FT_Face face;
 
 [[noreturn]] void die(const string& m) { fprintf(stderr, "error: %s\n", m.c_str()); exit(1); }
@@ -1153,10 +1157,22 @@ Scene summary(const vector<Scene>& scenes) {
 
 // ---------------- renderer ----------------
 vector<uint8_t> noiseTile; const int NT = 1024;
+vector<uint8_t> greenFrame;  // pre-filled board colour, reused by every frame
 void textures() {
     mt19937 rng(1); uniform_real_distribution<float> u(0, 1);
     noiseTile.resize(NT * NT);
     for (auto& v : noiseTile) v = 255 * (0.55f + 0.45f * u(rng)) * (u(rng) < 0.08f ? 0.3f : 1);
+    greenFrame.resize((size_t)W * H * 3);
+    for (int i = 0; i < W * H; i++) for (int c = 0; c < 3; c++) greenFrame[i * 3 + c] = GREEN[c];
+}
+
+int renderThreads(long frames) {
+    int n = THREADS;
+    if (n == 0) {
+        unsigned hc = thread::hardware_concurrency();
+        n = hc ? max(1, min(8, (int)hc - 1)) : 1;
+    }
+    return (int)min<long>(max(1, n), max(1L, frames));
 }
 
 void render(Scene& sc, FILE* out, long& frameNo, long totalFrames) {
@@ -1168,18 +1184,19 @@ void render(Scene& sc, FILE* out, long& frameNo, long totalFrames) {
         for (int bx = max(0.f, b[0]) / BK; bx <= (int)max(0.f, b[2]) / BK; bx++)
             for (int by = max(0.f, b[1]) / BK; by <= (int)max(0.f, b[3]) / BK; by++) buckets[(uint64_t)bx << 32 | by].push_back(i);
     }
-    vector<long> stamp(S.size(), -1); vector<float> acc(W * H); vector<uint8_t> fr(W * H * 3);
     const float M = CAM_MARGIN * SCALE, WIN = 60, zmax = max({1.f, BW / W, BH / H}) * 1.05f;
-    float zc = 1, cam[2] = {0, 0}, tgt[2] = {0, 0}, bnd[2] = {BW, BH}; bool first = true;
-    array<float, 4> act{0, 0, (float)W, (float)H}; size_t wa = 0, wb = 0, nextB = 0;
     auto pen = [&](const Stroke& k, float f) { float p = k.dur < 1e-6f ? 1 : clamp((f - k.t0 + 1) / k.dur, 0.f, 1.f);
         return make_pair(k.x + (k.x2 - k.x) * p, k.y + (k.y2 - k.y) * p); };
     long nF = (long)ceil(sc.T) + 1; auto t0 = chrono::steady_clock::now();
     bool fitCam = CAMERA == CAM_FIT;
-    vector<float> zfit;
+
+    // Camera path.  Computing it up front makes every frame independent, which
+    // is what lets the render loop below use several threads.
+    vector<float> zcArr(nF);
+    vector<array<float, 2>> camArr;
     if (fitCam) {
         // Required zoom for every frame, based on everything written up to then.
-        zfit.resize(nF); float mx = 0, my = 0;
+        vector<float> zfit(nF); float mx = 0, my = 0; size_t nextB = 0;
         for (long f = 0; f < nF; f++) {
             while (nextB < S.size() && S[nextB].t0 <= f) {
                 mx = max(mx, BB[nextB][2]); my = max(my, BB[nextB][3]); nextB++;
@@ -1193,15 +1210,13 @@ void render(Scene& sc, FILE* out, long& frameNo, long totalFrames) {
         float a = expf(-1.f / (FPS * max(0.05f, ZOOM_LEAD)));
         float z = zfit.back();
         for (long f = nF - 1; f >= 0; f--) { z = a * z + (1 - a) * zfit[f]; zfit[f] = max(z, zfit[f]); }
-    }
-    for (long f = 0; f < nF; f++, frameNo++) {
-        float vw[2] = {(float)W, (float)H};
-        if (fitCam) {
-            // --- camera: fixed at the origin, zoom out only ---
-            zc = zfit[f]; cam[0] = cam[1] = 0;
-            vw[0] = W * zc; vw[1] = H * zc;
-        } else {
-            // --- camera: follow everything written during the last WIN frames ---
+        zcArr = move(zfit);
+    } else {
+        // --- camera: follow everything written during the last WIN frames ---
+        camArr.resize(nF);
+        float zc = 1, cam[2] = {0, 0}, tgt[2] = {0, 0}, bnd[2] = {BW, BH}; bool first = true;
+        array<float, 4> act{0, 0, (float)W, (float)H}; size_t wa = 0, wb = 0;
+        for (long f = 0; f < nF; f++) {
             while (wb < S.size() && S[wb].t0 <= f) wb++;
             while (wa < wb && S[wa].t0 < f - WIN) wa++;
             if (wa < wb) {
@@ -1214,7 +1229,7 @@ void render(Scene& sc, FILE* out, long& frameNo, long totalFrames) {
             }
             float zt = clamp(max((act[2] - act[0]) / (W - 2 * M), (act[3] - act[1]) / (H - 2 * M)), 1.f, zmax);
             zc = first ? zt : zc * powf(zt / zc, 0.04f);
-            vw[0] = W * zc; vw[1] = H * zc;
+            float vw[2] = {(float)W * zc, (float)H * zc};
             float mb = M * zc;
             for (int ax = 0; ax < 2; ax++) {
                 float lo = act[ax], hi = act[ax + 2];
@@ -1224,34 +1239,65 @@ void render(Scene& sc, FILE* out, long& frameNo, long totalFrames) {
                 cam[ax] = first ? tgt[ax] : cam[ax] + (tgt[ax] - cam[ax]) * 0.08f;
             }
             first = false;
+            zcArr[f] = zc; camArr[f] = {cam[0], cam[1]};
         }
+    }
+
+    // mips() builds its pyramid lazily and inserts into a global map, so warm
+    // every glyph we might draw before starting the worker threads.
+    {
+        set<pair<int, char32_t>> need;
+        for (auto& k : S) if (k.size) need.insert({k.size, k.ch});
+        for (auto& p : need) mips(p.first, p.second);
+    }
+
+    struct Slot {
+        vector<float> acc;
+        vector<uint8_t> fr;
+        vector<long> stamp;
+        enum State { FREE, RENDERING, READY } state = FREE;
+    };
+    size_t frSize = (size_t)W * H * 3;
+    int nw = renderThreads(nF);
+    vector<Slot> slots(nw);
+    for (auto& s : slots) {
+        s.acc.resize(W * H);
+        s.fr.resize(frSize);
+        s.stamp.assign(S.size(), -1);
+    }
+
+    auto drawFrame = [&](long f, Slot& slot) {
+        float zc = zcArr[f];
+        float cx = fitCam ? 0.f : camArr[f][0];
+        float cy = fitCam ? 0.f : camArr[f][1];
+        float vw[2] = {(float)W * zc, (float)H * zc};
         // --- draw visible strokes into a coverage buffer ---
-        fill(acc.begin(), acc.end(), 0.f);
+        fill(slot.acc.begin(), slot.acc.end(), 0.f);
         float iz = 1 / zc; int L = max(0, (int)floor(log2f(zc) + 1e-4f));
-        for (int bx = max(0, (int)(cam[0] / BK)); bx <= (int)((cam[0] + vw[0]) / BK); bx++)
-            for (int by = max(0, (int)(cam[1] / BK)); by <= (int)((cam[1] + vw[1]) / BK); by++) {
+        for (int bx = max(0, (int)(cx / BK)); bx <= (int)((cx + vw[0]) / BK); bx++)
+            for (int by = max(0, (int)(cy / BK)); by <= (int)((cy + vw[1]) / BK); by++) {
                 auto it = buckets.find((uint64_t)bx << 32 | by); if (it == buckets.end()) continue;
                 for (uint32_t id : it->second) {
                     const Stroke& k = S[id];
                     if (k.t0 > f) break;
-                    if (stamp[id] == f || k.te <= f) continue;
-                    stamp[id] = f;
+                    if (slot.stamp[id] == f || k.te <= f) continue;
+                    slot.stamp[id] = f;
                     float p = k.dur < 1e-6f ? 1 : min(1.f, (f - k.t0 + 1) / k.dur);
                     if (k.size) {
                         const auto& mv = mips(k.size, k.ch); int l = min(L, (int)mv.size() - 1), s = 1 << l; const Mip& m = mv[l];
                         float gx = BB[id][0], gy = BB[id][1], wgt = (s * iz) * (s * iz) / 65025.f; int cols = ceil(m.w * p);
                         for (int j = 0; j < m.h; j++) {
-                            int sy = floor((gy + (j + 0.5f) * s - cam[1]) * iz); if (sy < 0 || sy >= H) continue;
+                            int sy = floor((gy + (j + 0.5f) * s - cy) * iz); if (sy < 0 || sy >= H) continue;
                             int ny = ((int)gy + j * s) & (NT - 1);
                             for (int i = 0; i < cols; i++) {
                                 int a = m.a[j * m.w + i]; if (!a) continue;
-                                int sx = floor((gx + (i + 0.5f) * s - cam[0]) * iz); if (sx < 0 || sx >= W) continue;
-                                acc[sy * W + sx] += a * noiseTile[ny * NT + (((int)gx + i * s) & (NT - 1))] * wgt;
+                                int sx = floor((gx + (i + 0.5f) * s - cx) * iz); if (sx < 0 || sx >= W) continue;
+                                slot.acc[sy * W + sx] += a * noiseTile[ny * NT + (((int)gx + i * s) & (NT - 1))] * wgt;
                             }
                         }
                     } else {
                         auto [ex, ey] = pen(k, f);
-                        float x1 = (k.x - cam[0]) * iz, y1 = (k.y - cam[1]) * iz, x2 = (ex - cam[0]) * iz, y2 = (ey - cam[1]) * iz;
+                        float x1 = (k.x - cx) * iz, y1 = (k.y - cy) * iz, x2 = (ex - cx) * iz, y2 = (ey - cy) * iz;
                         float hw = 3 * SCALE * iz, al = 1; if (hw < 0.5f) { al = hw * 2; hw = 0.5f; }
                         float dx = x2 - x1, dy = y2 - y1, L2 = max(dx * dx + dy * dy, 1e-6f);
                         for (int sy = max(0, (int)floor(min(y1, y2) - hw)); sy <= min(H - 1, (int)ceil(max(y1, y2) + hw)); sy++)
@@ -1259,19 +1305,76 @@ void render(Scene& sc, FILE* out, long& frameNo, long totalFrames) {
                                 float t = clamp(((sx + .5f - x1) * dx + (sy + .5f - y1) * dy) / L2, 0.f, 1.f);
                                 float qx = x1 + t * dx - sx - .5f, qy = y1 + t * dy - sy - .5f;
                                 if (qx * qx + qy * qy > hw * hw) continue;
-                                int nx = (int)(cam[0] + sx * zc) & (NT - 1), ny = (int)(cam[1] + sy * zc) & (NT - 1);
-                                acc[sy * W + sx] += al * noiseTile[ny * NT + nx] / 255.f;
+                                int nx = (int)(cx + sx * zc) & (NT - 1), ny = (int)(cy + sy * zc) & (NT - 1);
+                                slot.acc[sy * W + sx] += al * noiseTile[ny * NT + nx] / 255.f;
                             }
                     }
                 }
             }
-        for (int i = 0; i < W * H; i++) { float a = min(1.f, acc[i]); for (int c = 0; c < 3; c++) fr[i * 3 + c] = GREEN[c] + (CHALK[c] - GREEN[c]) * a; }
-        fwrite(fr.data(), 1, fr.size(), out);
+        // Start from the board colour and blend only pixels that were touched.
+        // Most of a frame is empty, so this is much cheaper than visiting every
+        // pixel, and it keeps the same anti-aliased chalk look.
+        memcpy(slot.fr.data(), greenFrame.data(), frSize);
+        for (int i = 0; i < W * H; i++) {
+            float a = slot.acc[i];
+            if (a <= 0) continue;
+            a = min(1.f, a);
+            for (int c = 0; c < 3; c++) slot.fr[i * 3 + c] = GREEN[c] + (CHALK[c] - GREEN[c]) * a;
+        }
+    };
+
+    auto writeFrame = [&](long f, Slot& slot) {
+        if (fwrite(slot.fr.data(), 1, frSize, out) != frSize) die("write failed");
+        frameNo++;
         if (frameNo % 600 == 0) {
             double s = chrono::duration<double>(chrono::steady_clock::now() - t0).count();
             fprintf(stderr, "\rframe %ld / %ld  (%.0f fps)   ", frameNo, totalFrames, f / max(s, 1e-3)); fflush(stderr);
         }
+    };
+
+    if (nF <= 0) return;
+    if (nw == 1) {
+        for (long f = 0; f < nF; f++) {
+            drawFrame(f, slots[0]);
+            writeFrame(f, slots[0]);
+        }
+        return;
     }
+
+    // Worker w renders frames w, w+nw, ... into its own slot; the writer below
+    // consumes slots in order, so ffmpeg still receives frames sequentially.
+    mutex m; condition_variable cv;
+    vector<thread> pool;
+    for (int w = 0; w < nw; w++)
+        pool.emplace_back([&, w]() {
+            for (long f = w; f < nF; f += nw) {
+                {
+                    unique_lock lk(m);
+                    cv.wait(lk, [&] { return slots[w].state == Slot::FREE; });
+                    slots[w].state = Slot::RENDERING;
+                }
+                drawFrame(f, slots[w]);
+                {
+                    lock_guard lk(m);
+                    slots[w].state = Slot::READY;
+                }
+                cv.notify_all();
+            }
+        });
+    for (long f = 0; f < nF; f++) {
+        int w = (int)(f % nw);
+        {
+            unique_lock lk(m);
+            cv.wait(lk, [&] { return slots[w].state == Slot::READY; });
+        }
+        writeFrame(f, slots[w]);
+        {
+            lock_guard lk(m);
+            slots[w].state = Slot::FREE;
+        }
+        cv.notify_all();
+    }
+    for (auto& t : pool) t.join();
 }
 
 int main(int argc, char** argv) {
@@ -1311,13 +1414,21 @@ int main(int argc, char** argv) {
             MAX_SCENE_SECONDS = atof(argv[i]);
             if (MAX_SCENE_SECONDS < 0) die("--max-scene-seconds must be non-negative");
         }
+        else if (a == "--threads") {
+            if (++i == argc) die("--threads requires a value");
+            char* end = nullptr;
+            long n = strtol(argv[i], &end, 10);
+            if (end == argv[i] || *end || n < 0 || n > 64)
+                die("--threads must be an integer from 0 to 64");
+            THREADS = (int)n;
+        }
         else if (in.empty()) in = a;
         else if (out.empty()) out = a;
         else die("unexpected argument: " + a);
     }
     if (showExpanded && onlyResults) die("--show-expanded and --only-show-results are mutually exclusive");
     if (showExpanded) expand = true;
-    if (in.empty() || (!onlyResults && !showExpanded && !stats && out.empty())) die("usage: board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--font PATH] [--encoder h264_nvenc] [--format 360p|480p|720p|1080p|1440p|2160p|WxH] [--camera fit|follow] [--zoom-lead S] [--auto-speed R] [--max-auto-speed X] [--max-scene-seconds S] [--expand] [--show-expanded] [--stats] [--dry] [--only-show-results]\n       out.mp4 may be omitted with --only-show-results, --show-expanded or --stats");
+    if (in.empty() || (!onlyResults && !showExpanded && !stats && out.empty())) die("usage: board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--font PATH] [--encoder h264_nvenc] [--format 360p|480p|720p|1080p|1440p|2160p|WxH] [--camera fit|follow] [--zoom-lead S] [--auto-speed R] [--max-auto-speed X] [--max-scene-seconds S] [--threads N] [--expand] [--show-expanded] [--stats] [--dry] [--only-show-results]\n       out.mp4 may be omitted with --only-show-results, --show-expanded or --stats");
     AUTO_SPEED = max(0.f, AUTO_SPEED); MAX_AUTO_SPEED = max(1.f, MAX_AUTO_SPEED); ZOOM_LEAD = max(0.05f, ZOOM_LEAD);
     if (!onlyResults && !showExpanded) {  // results/expanded only: no font, no rendering
         if (FT_Init_FreeType(&ft)) die("freetype");

@@ -38,8 +38,8 @@ make
 ./board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--font PATH] [--encoder h264_nvenc]
                          [--format 360p|480p|720p|1080p|1440p|2160p|WxH]
                          [--camera fit|follow] [--zoom-lead S] [--auto-speed R] [--max-auto-speed X]
-                         [--max-scene-seconds S] [--expand] [--show-expanded] [--stats] [--dry]
-                         [--only-show-results]
+                         [--max-scene-seconds S] [--threads N] [--expand] [--show-expanded]
+                         [--stats] [--dry] [--only-show-results]
 ```
 
 Both the input file and the output file are required, except with
@@ -89,6 +89,11 @@ needed. The output may also be given with `-o out.mp4`. For example:
   seconds) and exits without rendering. This makes it easy to see which
   operation is expensive and to tune the speed options. It needs a font but no
   output file or `ffmpeg`.
+- `--threads N` sets how many frames are rasterised in parallel. `--threads 1`
+  renders serially. `--threads 0` (the default) picks one fewer than the
+  available CPU cores, up to 8. Frames are still written to `ffmpeg` in order,
+  so the output is identical. Leave some cores for `ffmpeg`: on a 4-core
+  machine, `--threads 2` or `3` is usually a good choice.
 - `--format NAME` sets the output resolution. Presets are `360p` (640x360),
   `480p` (854x480), `720p` (1280x720, the default), `1080p` (1920x1080),
   `1440p` (2560x1440) and `2160p`/`4k` (3840x2160). A custom `WxH` such as
@@ -163,6 +168,25 @@ bound. `--speed` is a simpler uniform multiplier:
 The order is: zoom-based auto-speed, then the per-scene cap, then the global
 `--speed`/`--minutes` scale. Use `--auto-speed 0` to disable the zoom-based
 part, and `--max-scene-seconds 0` to disable the per-scene cap.
+
+### Rendering performance
+
+Rendering is split into independent whole frames. Each worker rasterises a
+complete frame into its own buffer, and a writer feeds the completed frames to
+`ffmpeg` in order. That means:
+
+- `--threads N` controls the number of frame workers (`0` = automatic).
+- `--threads 1` is the old single-threaded path.
+- The output is frame-for-frame identical to serial rendering.
+- Only pixels touched by chalk are colour-converted; the empty board is
+  pre-filled, which makes the colour pass much cheaper.
+
+`ffmpeg` also uses several cores, so do not give all cores to `board`. For
+example:
+
+```sh
+./board nrlarge.txt nrlarge.mp4 --expand --max-scene-seconds 10 --threads 2
+```
 
 Input is one operation per line. A decimal comma or a decimal point may be
 used (e.g. `1,5` or `1.5`), and spaces may be used as thousands separators.
