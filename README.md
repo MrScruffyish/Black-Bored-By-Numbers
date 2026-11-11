@@ -228,14 +228,24 @@ a = sqrt{2}
 sqrt{152,29}
 ```
 
+`N` may use a decimal comma or point. The digits are paired outwards from the
+decimal point, and an odd fractional tail is padded with a zero. For example,
+`sqrt{152,29}` works on the pairs `1`, `52`, `29`, so the root has two integer
+digits and starts `12,34...`. The default result is `12,34058345`. An exact
+root stops as soon as the remainder is zero, so `sqrt{152,2756}` is `12,34`.
+
 By default the root keeps at most `2 * D` significant digits, where `D` is the
 number of digits in the radicand (leading zeros excluded), mirroring the
 division rule. Leading zeros do not count and integer digits are always kept
-in full. A per-line `\meta sqrt_digits=K` overrides this:
+in full. Digits beyond the limit are truncated, not rounded. A per-line
+`\meta sqrt_digits=K` overrides this:
 
 ```text
 sqrt{2} \meta sqrt_digits=20
+sqrt{152,29} \meta sqrt_digits=6
 ```
+
+The second line gives `12,3405`.
 
 Lines containing a backslash (or wrapped in `$...$`) are rendered as math
 formulas instead. A small LaTeX subset is supported: `\frac{}{}`, `\sqrt{}`,
