@@ -33,6 +33,13 @@ FT_Library ft; FT_Face face;
 
 [[noreturn]] void die(const string& m) { fprintf(stderr, "error: %s\n", m.c_str()); exit(1); }
 
+string trimStr(const string& s) {
+    size_t a = s.find_first_not_of(" \t");
+    if (a == string::npos) return "";
+    size_t b = s.find_last_not_of(" \t");
+    return s.substr(a, b - a + 1);
+}
+
 // Video size presets.  A custom "WxH" value is accepted too.
 bool parseFormat(const string& f, int& w, int& h) {
     static const map<string, pair<int, int>> presets = {
@@ -419,6 +426,52 @@ Big addInt(Big a, int v) {  // a + v, v small
 bool isZero(const Big& a) { return a.size() == 1 && !a[0]; }
 int sigDigits(const Num& n) { Big t = n.d; trim(t); return t.size(); }  // digits ignoring leading zeros
 
+// ---------------- big integer helpers (for compound expressions) ----------------
+Big addB(const Big& a, const Big& b) {
+    Big r; int carry = 0;
+    for (size_t i = 0; i < max(a.size(), b.size()) || carry; i++) {
+        int v = carry + (i < a.size() ? a[i] : 0) + (i < b.size() ? b[i] : 0);
+        r.push_back(v % 10); carry = v / 10;
+    }
+    trim(r); return r;
+}
+Big mulB(const Big& a, const Big& b) {
+    if (isZero(a) || isZero(b)) return Big{0};
+    vector<long long> t(a.size() + b.size(), 0);
+    for (size_t i = 0; i < a.size(); i++)
+        for (size_t j = 0; j < b.size(); j++)
+            t[i + j] += (long long)a[i] * b[j];
+    long long carry = 0;
+    for (size_t k = 0; k < t.size(); k++) {
+        long long v = t[k] + carry;
+        t[k] = v % 10; carry = v / 10;
+    }
+    while (carry) { t.push_back(carry % 10); carry /= 10; }
+    Big r(t.begin(), t.end()); trim(r); return r;
+}
+Big divmodB(const Big& a, const Big& b, Big& rem) {
+    if (isZero(b)) die("division by zero");
+    if (cmp(a, b) < 0) { rem = a; trim(rem); return Big{0}; }
+    Big q(a.size(), 0), r{0};
+    for (int i = (int)a.size() - 1; i >= 0; i--) {
+        r.insert(r.begin(), a[i]); trim(r);
+        int d = 0;
+        while (cmp(r, b) >= 0) { r = subB(r, b); d++; }
+        q[i] = d;
+    }
+    trim(q); rem = r; return q;
+}
+Big gcdB(Big a, Big b) {
+    while (!isZero(b)) { Big r; divmodB(a, b, r); a = b; b = r; }
+    return a;
+}
+Big pow10B(int k) { Big r(k + 1, 0); r[k] = 1; return r; }
+string bigToString(const Big& a) {
+    string s;
+    for (int i = (int)a.size() - 1; i >= 0; i--) s += char('0' + a[i]);
+    return s.empty() ? "0" : s;
+}
+
 
 Num parse(string s) {
     Num n; s.erase(remove_if(s.begin(), s.end(), [](unsigned char c) { return isspace(c); }), s.end());
@@ -437,6 +490,36 @@ Num parse(string s) {
 }
 int get(const Num& n, int e) { int k = e + n.dec; return k >= 0 && k < (int)n.d.size() ? n.d[k] : 0; }
 int hiE(const Num& n) { return (int)n.d.size() - n.dec - 1; }
+
+// ---------------- exact rationals for compound expressions ----------------
+struct Rat { bool neg = false; Big n{0}, d{1}; };  // n/d, both non-negative
+Rat makeRat(Big n, Big d, bool neg = false) {
+    trim(n); trim(d);
+    if (isZero(n)) return Rat{};
+    Big g = gcdB(n, d), r;
+    n = divmodB(n, g, r);
+    d = divmodB(d, g, r);
+    Rat x; x.neg = neg; x.n = n; x.d = d; return x;
+}
+Rat ratFromNum(const Num& v) {
+    Big n = v.d; trim(n);
+    return makeRat(n, pow10B(v.dec));
+}
+Rat negRat(const Rat& a) { Rat r = a; if (!isZero(r.n)) r.neg = !r.neg; return r; }
+Rat addRat(const Rat& a, const Rat& b) {
+    Big ad = mulB(a.n, b.d), bd = mulB(b.n, a.d), den = mulB(a.d, b.d);
+    if (a.neg == b.neg) return makeRat(addB(ad, bd), den, a.neg);
+    int c = cmp(ad, bd);
+    if (c == 0) return Rat{};
+    if (c > 0) return makeRat(subB(ad, bd), den, a.neg);
+    return makeRat(subB(bd, ad), den, b.neg);
+}
+Rat subRat(const Rat& a, const Rat& b) { return addRat(a, negRat(b)); }
+Rat mulRat(const Rat& a, const Rat& b) { return makeRat(mulB(a.n, b.n), mulB(a.d, b.d), a.neg != b.neg); }
+Rat divRat(const Rat& a, const Rat& b) {
+    if (isZero(b.n)) die("division by zero");
+    return makeRat(mulB(a.n, b.d), mulB(a.d, b.n), a.neg != b.neg);
+}
 // ---------------- square root ----------------
 // Digits of N split into pairs, with the decimal point between the two lists.
 // A pair is {tens, units}; the leading integer pair has tens = -1 when it has
@@ -511,6 +594,31 @@ string norm(string s) {
     size_t z = 0; while (z + 1 < s.size() && s[z] == '0' && s[z + 1] != '.') z++;
     return s.substr(z);
 }
+// Truncate an exact rational to a decimal string.  +, -, and * are exact and
+// always terminate, so they are never capped.  A line containing / uses the
+// same precision rule as a single division: div_digits=N counts all significant
+// digits, otherwise 2 * (largest significant-digit count among the literals)
+// counts significant fractional digits.  Leading zeros after the comma are free.
+string ratToDecimal(const Rat& v, bool hasDiv, int divDigits, int maxSig) {
+    if (v.neg && !isZero(v.n)) die("negative result not supported");
+    Big rem; Big ip = divmodB(v.n, v.d, rem);
+    string out = bigToString(ip), frac;
+    int sig = 0;
+    if (divDigits >= 0)
+        for (char c : out) if (sig > 0 || c != '0') sig++;
+    int cap = divDigits >= 0 ? divDigits : 2 * max(1, maxSig);
+    for (;;) {
+        if (isZero(rem)) break;
+        if (hasDiv && sig >= cap) break;
+        Big r; Big q = divmodB(mulS(rem, 10), v.d, r); rem = r;
+        int digit = q.empty() ? 0 : q[0];
+        frac += char('0' + digit);
+        if (hasDiv && (sig > 0 || digit != 0)) sig++;
+    }
+    while (!frac.empty() && frac.back() == '0') frac.pop_back();
+    if (!frac.empty()) out += "." + frac;
+    return norm(out);
+}
 string digits2str(const vector<int>& res, int dec) {  // res[k] = digit of exponent k-dec
     string s; vector<int> r = res; while ((int)r.size() <= dec) r.push_back(0);
     for (int k = r.size() - 1; k >= 0; k--) { s += char('0' + r[k]); if (k == dec && dec) s += '.'; }
@@ -537,6 +645,103 @@ string bcRaw(const string& expr) {  // bc output without norm(), so errors are d
 }
 string bc(const string& expr) { return norm(bcRaw(expr)); }
 
+// ---------------- compound arithmetic expressions ----------------
+// Grammar:
+//   expr   := term (('+' | '-') term)*
+//   term   := factor (('*' | '/') factor)*
+//   factor := number | '(' expr ')' | ('+' | '-') factor
+// Only the four keyboard operators and parentheses are accepted.  Numbers may
+// use a decimal comma or point and spaces as thousands separators.
+struct EvalResult {
+    string decimal;       // bc-style: '.' decimal separator, no thousand separators
+    bool hasDiv = false;
+    int opCount = 0;
+};
+struct ExprParser {
+    const string& s; size_t i = 0; int lineNo;
+    bool hasDiv = false; int opCount = 0; int maxSig = 1;
+    ExprParser(const string& t, int ln) : s(t), lineNo(ln) {}
+    [[noreturn]] void bad(const string& m) const {
+        if (lineNo > 0) die("line " + to_string(lineNo) + ": " + m);
+        die(m);
+    }
+    void skip() { while (i < s.size() && isspace((unsigned char)s[i])) i++; }
+    Rat parseExpr() {
+        Rat v = parseTerm();
+        for (;;) {
+            skip();
+            if (i < s.size() && (s[i] == '+' || s[i] == '-')) {
+                char op = s[i++]; Rat r = parseTerm(); opCount++;
+                v = op == '+' ? addRat(v, r) : subRat(v, r);
+            } else break;
+        }
+        return v;
+    }
+    Rat parseTerm() {
+        Rat v = parseFactor();
+        for (;;) {
+            skip();
+            if (i < s.size() && (s[i] == '*' || s[i] == '/')) {
+                char op = s[i++]; Rat r = parseFactor(); opCount++;
+                if (op == '*') v = mulRat(v, r);
+                else { hasDiv = true; v = divRat(v, r); }
+            } else break;
+        }
+        return v;
+    }
+    Rat parseFactor() {
+        skip();
+        if (i < s.size() && s[i] == '(') {
+            i++; Rat v = parseExpr(); skip();
+            if (i >= s.size() || s[i] != ')') bad("missing ')' in expression");
+            i++; return v;
+        }
+        if (i < s.size() && (s[i] == '+' || s[i] == '-')) {
+            char op = s[i++]; Rat v = parseFactor(); opCount++;
+            return op == '-' ? negRat(v) : v;
+        }
+        return parseNumber();
+    }
+    Rat parseNumber() {
+        skip();
+        size_t start = i;
+        while (i < s.size()) {
+            char c = s[i];
+            if (isdigit((unsigned char)c) || c == '.' || c == ',' || isspace((unsigned char)c)) i++;
+            else break;
+        }
+        string tok = trimStr(s.substr(start, i - start));
+        bool digit = false;
+        for (char c : tok) if (isdigit((unsigned char)c)) digit = true;
+        if (!digit) bad("expected a number");
+        Num n = parse(tok);
+        maxSig = max(maxSig, sigDigits(n));
+        return ratFromNum(n);
+    }
+};
+EvalResult evalExpression(const string& expr, int divDigits = -1, int loopDiv = -1, int lineNo = 0) {
+    ExprParser p(expr, lineNo);
+    Rat v = p.parseExpr();
+    p.skip();
+    if (p.i != expr.size()) p.bad("cannot parse expression: " + expr);
+    EvalResult r; r.hasDiv = p.hasDiv; r.opCount = p.opCount;
+    int dd = divDigits;
+    if (dd < 0 && p.hasDiv && loopDiv >= 0) dd = loopDiv;
+    r.decimal = ratToDecimal(v, p.hasDiv, p.hasDiv ? dd : -1, p.maxSig);
+    return r;
+}
+string decimalDisplay(const string& s) {
+    string r = s;
+    for (char& c : r) if (c == '.') c = ',';
+    return r;
+}
+bool isArithmeticText(const string& s) {
+    for (char c : s)
+        if (!(isdigit((unsigned char)c) || isspace((unsigned char)c) || c == '+' || c == '-' ||
+              c == '*' || c == '/' || c == '(' || c == ')' || c == '.' || c == ',')) return false;
+    return true;
+}
+
 // column grid: exponent e -> x of the digit cell; comma slot between e=0 and e=-1; gap every 3 digits
 struct Grid {
     float CX, slot = 0.5f;  // slot: width (in CW) reserved for the comma; 0 -> commas squeezed in
@@ -561,9 +766,22 @@ void finish(Scene& sc, const vector<int>& res, int dec, const string& expr) {
     else { float x = writeName(sc, sc.name, 60, 130); sc.text(" = " + sc.value, x, 130, TITLE, 75); }
 }
 
+// A compound expression is drawn as one scene: the whole expression on the
+// title line and its result below.  This keeps every operation in the same
+// frame instead of splitting the line into several scenes.
+Scene exprScene(const string& name, const string& expr, const EvalResult& r) {
+    Scene sc = start(name, expr);
+    sc.value = fmt(r.decimal);
+    sc.pause(30);
+    float y = 130;
+    if (name.empty()) sc.text("= " + sc.value, 60, y, TITLE, 75);
+    else { float x = writeName(sc, name, 60, y); sc.text(" = " + sc.value, x, y, TITLE, 75); }
+    return sc;
+}
+
 // ---------------- algorithms ----------------
 Scene addsub(Num a, Num b, bool plus, const string& name) {
-    Scene sc = start(name, fmtNum(a) + (plus ? " + " : " − ") + fmtNum(b));
+    Scene sc = start(name, fmtNum(a) + (plus ? " + " : " - ") + fmtNum(b));
     int lo = -max(a.dec, b.dec), hi = max(hiE(a), hiE(b)) + (plus ? 1 : 0), hiA = hiE(a);
     string expr = bcform(a) + (plus ? " + " : " - ") + bcform(b);
     if (!plus) for (Num* n : {&a, &b}) { int k = -lo - n->dec; n->d.insert(n->d.begin(), k, 0); n->dec += k; }
@@ -572,7 +790,7 @@ Scene addsub(Num a, Num b, bool plus, const string& name) {
     for (auto [n, y] : {make_pair(&a, y0), make_pair(&b, y1)})
         for (int e = hiE(*n); e >= -n->dec; e--) { if (e == -1) commaSlot(sc, g, y); sc.big('0' + get(*n, e), X(e), y); }
     float sx = X(hi) - CW * 1.2f;
-    sc.big(plus ? U'+' : U'−', sx, y1); sc.line(sx, yl, X(lo) + CW, yl, 10);
+    sc.big(plus ? U'+' : U'-', sx, y1); sc.line(sx, yl, X(lo) + CW, yl, 10);
     vector<int> res;  // res[e-lo]
     if (plus) {
         int carry = 0;
@@ -611,7 +829,7 @@ Scene addsub(Num a, Num b, bool plus, const string& name) {
 }
 
 Scene mul(const Num& A, const Num& B, const string& name) {
-    Scene sc = start(name, fmtNum(A) + " × " + fmtNum(B));
+    Scene sc = start(name, fmtNum(A) + " * " + fmtNum(B));
     int nA = A.d.size(), nB = B.d.size(), nres = nA + nB, D = A.dec + B.dec;
     // Leading zero digits contribute nothing but would draw empty rows and
     // columns of zeros.  Skip them in the partial products; the operands are
@@ -626,7 +844,7 @@ Scene mul(const Num& A, const Num& B, const string& name) {
     for (auto [n, r] : {make_pair(&A, 0), make_pair(&B, 1)})
         for (int i = n->d.size() - 1; i >= 0; i--) { sc.big('0' + n->d[i], X(i), ys(r)); if (i == n->dec && i) commaAfter(sc, g, i - D, ys(r)); }
     float sx = X(max(nA, nB)) - CW * 0.6f, right = X(0) + CW;
-    sc.big(U'×', sx, ys(1)); sc.line(sx, ys(1) + 125, right, ys(1) + 125, 10);
+    sc.big(U'*', sx, ys(1)); sc.line(sx, ys(1) + 125, right, ys(1) + 125, 10);
     vector<vector<int>> part(nB, vector<int>(nres, 0));
     for (int j = 0; j <= hiB; j++) {
         int carry = 0; float y = ys(2 + j) + 15; size_t c0 = 0, c1 = 0;
@@ -805,7 +1023,7 @@ Scene sqrtScene(const Num& n, const string& name, int sqrtDigits) {
 // it.  Used by --only-show-results, which skips all drawing.
 string computeValue(const Num& a, const Num& b, const string& op, int divDigits = -1) {
     string expr;
-    if (op == "/" || op == ":" || op == "÷") {
+    if (op == "/") {
         Big d = b.d; trim(d); if (isZero(d)) die("division by zero");
         Num A = a; int k = b.dec;  // move the comma k steps right in both numbers
         if (A.dec < k) { A.d.insert(A.d.begin(), k - A.dec, 0); A.dec = 0; } else A.dec -= k;
@@ -815,7 +1033,7 @@ string computeValue(const Num& a, const Num& b, const string& op, int divDigits 
         if (divDigits < 0 && DECIMALS >= 0) decCap = min(decCap, DECIMALS);
         int dec = divisionLength(A, d, nInt, decCap, divDigits >= 0) - nInt;
         expr = "scale=" + to_string(dec) + "\n" + bcform(a) + " / " + bcform(b);
-    } else if (op == "+" || op == "-" || op == "−") {
+    } else if (op == "+" || op == "-") {
         expr = bcform(a) + (op == "+" ? " + " : " - ") + bcform(b);
     } else {
         expr = bcform(a) + " * " + bcform(b);
@@ -847,17 +1065,14 @@ string computeSqrtValue(const Num& n, int sqrtDigits) {
 // selects a block after evaluating a numeric comparison with bc, and
 // \begin{algorithm}{title} ... \end{algorithm} adds a formula title and a
 // variable scope.
-const regex ARITH_RE(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?([0-9 .,]*[0-9,.])\s*(\+|-|\*|x|×|−|/|:|÷)\s*([0-9 .,]*[0-9,.])\s*$)");
+const regex ARITH_RE(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?([0-9 .,]*[0-9,.])\s*(\+|-|\*|/)\s*([0-9 .,]*[0-9,.])\s*$)");
 const regex SQRT_RE(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?sqrt\s*\{\s*([0-9 .,]*[0-9,.])\s*\}\s*$)");
+// An arithmetic line with an optional display name.  The expression itself is
+// checked by ExprParser; this only splits "name = expression".
+const regex EXPR_LINE_RE(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?(.*?)\s*$)");
 const regex VAR_RE(R"([A-Za-z][A-Za-z0-9_]*)");
 const regex LABEL_RE(R"(\s+label\s*=\s*([A-Za-z][A-Za-z0-9_]*)\s*$)");
 
-string trimStr(const string& s) {
-    size_t a = s.find_first_not_of(" \t");
-    if (a == string::npos) return "";
-    size_t b = s.find_last_not_of(" \t");
-    return s.substr(a, b - a + 1);
-}
 bool startsWithWord(const string& s, const string& w) {
     return s.compare(0, w.size(), w) == 0 && (s.size() == w.size() || isspace((unsigned char)s[w.size()]));
 }
@@ -939,9 +1154,22 @@ struct Expander {
     string applyLoopDiv(const string& body, int loopDiv) {
         if (loopDiv < 0) return body;
         smatch m;
-        if (!regex_match(body, m, ARITH_RE)) return body;
-        string op = m[3];
-        if (op != "/" && op != ":" && op != "÷") return body;
+        bool hasDiv = false;
+        if (regex_match(body, m, ARITH_RE)) {
+            if (m[3] != "/") return body;
+            hasDiv = true;
+        } else {
+            if (body.find('\\') != string::npos) return body;
+            smatch em;
+            if (!regex_match(body, em, EXPR_LINE_RE)) return body;
+            string expr = trimStr(em[2]);
+            if (expr.find('/') == string::npos) return body;
+            for (char c : expr)
+                if (!(isdigit((unsigned char)c) || c == ' ' || c == '\t' || c == '+' || c == '-' ||
+                      c == '*' || c == '/' || c == '(' || c == ')' || c == '.' || c == ',')) return body;
+            hasDiv = true;
+        }
+        if (!hasDiv) return body;
         string copy = body;
         if (takeMeta(copy).divDigits >= 0) return body;  // an explicit \meta wins
         return body + " \\meta div_digits=" + to_string(loopDiv);
@@ -981,16 +1209,20 @@ struct Expander {
                 if (!changed) break;
             }
             work = trimStr(work);
-            smatch am;
-            if (!regex_match(work, am, ARITH_RE))
+            smatch em;
+            if (!regex_match(work, em, EXPR_LINE_RE))
                 die("line " + to_string(lineNo) + ": cannot parse \\calc: " + work);
-            string shown = am[1], op = am[3];
-            Num a = parse(am[2]), b = parse(am[4]);
-            bool isDiv = op == "/" || op == ":" || op == "÷";
-            if (isDiv && meta.divDigits < 0 && loopDiv >= 0) meta.divDigits = loopDiv;
+            string shown = em[1], expr = trimStr(em[2]);
+            if (expr.empty()) die("line " + to_string(lineNo) + ": \\calc needs an expression");
+            if (!isArithmeticText(expr))
+                die("line " + to_string(lineNo) + ": cannot parse \\calc: " + work);
+            EvalResult r = evalExpression(expr, meta.divDigits, loopDiv, lineNo);
+            if (r.opCount == 0)
+                die("line " + to_string(lineNo) + ": cannot parse \\calc: " + work);
+            if (r.hasDiv && meta.divDigits < 0 && loopDiv >= 0) meta.divDigits = loopDiv;
             shown.erase(remove_if(shown.begin(), shown.end(), [](unsigned char c) { return isspace(c); }), shown.end());
             string store = label.empty() ? shown : label;
-            if (!store.empty()) vars[store] = computeValue(a, b, op, meta.divDigits);
+            if (!store.empty()) vars[store] = decimalDisplay(r.decimal);
             string metaSuffix;
             if (meta.divDigits >= 0) metaSuffix += " \\meta div_digits=" + to_string(meta.divDigits);
             if (meta.sqrtDigits >= 0) metaSuffix += " \\meta sqrt_digits=" + to_string(meta.sqrtDigits);
@@ -1508,17 +1740,34 @@ int main(int argc, char** argv) {
             fprintf(stderr, "ok (sqrt): %.100s\n", body.c_str());
             continue;
         }
-        if (!regex_match(body, m, ARITH_RE))
-            die("cannot parse: " + body + "\n  (wrap it in \\begin{latex} ... \\end{latex} to render it as maths)");
-        Num a = parse(m[2]), b = parse(m[4]); string op = m[3], name = m[1];
-        name.erase(remove_if(name.begin(), name.end(), [](unsigned char c) { return isspace(c); }), name.end());
-        if (onlyResults) {
-            results.push_back(computeValue(a, b, op, meta.divDigits));
+        if (regex_match(body, m, ARITH_RE)) {
+            Num a = parse(m[2]), b = parse(m[4]); string op = m[3], name = m[1];
+            name.erase(remove_if(name.begin(), name.end(), [](unsigned char c) { return isspace(c); }), name.end());
+            if (onlyResults) {
+                results.push_back(computeValue(a, b, op, meta.divDigits));
+                continue;
+            }
+            scenes.push_back(op == "+" ? addsub(a, b, true, name) : op == "-" ? addsub(a, b, false, name)
+                             : op == "/" ? divide(a, b, op, name, meta.divDigits) : mul(a, b, name));
+            fprintf(stderr, "ok (bc agrees): %.100s\n", l.c_str());
             continue;
         }
-        scenes.push_back(op == "+" ? addsub(a, b, true, name) : op == "-" || op == "−" ? addsub(a, b, false, name)
-                         : op == "/" || op == ":" || op == "÷" ? divide(a, b, op, name, meta.divDigits) : mul(a, b, name));
-        fprintf(stderr, "ok (bc agrees): %.100s\n", l.c_str());
+        smatch em;
+        if (!regex_match(body, em, EXPR_LINE_RE))
+            die("cannot parse: " + body + "\n  (wrap it in \\begin{latex} ... \\end{latex} to render it as maths)");
+        string name = em[1], expr = trimStr(em[2]);
+        name.erase(remove_if(name.begin(), name.end(), [](unsigned char c) { return isspace(c); }), name.end());
+        if (!isArithmeticText(expr))
+            die("cannot parse: " + body + "\n  (wrap it in \\begin{latex} ... \\end{latex} to render it as maths)");
+        EvalResult er = evalExpression(expr, meta.divDigits);
+        if (er.opCount == 0)
+            die("cannot parse: " + body + "\n  (wrap it in \\begin{latex} ... \\end{latex} to render it as maths)");
+        if (onlyResults) {
+            results.push_back(decimalDisplay(er.decimal));
+            continue;
+        }
+        scenes.push_back(exprScene(name, expr, er));
+        fprintf(stderr, "ok (expr): %.100s\n", l.c_str());
     }
     if (latexBlock) die("unterminated \\begin" + (latexEnv.empty() ? string() : "{" + latexEnv + "}") + " block");
     if (onlyResults) {

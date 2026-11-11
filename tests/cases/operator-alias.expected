@@ -1,0 +1,2 @@
+error: cannot parse: 1 x 2
+  (wrap it in \begin{latex} ... \end{latex} to render it as maths)

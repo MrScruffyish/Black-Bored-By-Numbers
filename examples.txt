@@ -1,10 +1,79 @@
-# [name =] number op number    ops: + - * / (also x × − : ÷)
-# decimal comma, space as thousand separator; names may have a LaTeX index: b_{i+1}, x_1
+# Examples for Black-Bored-By-Numbers.
+# Run with: ./board examples.txt examples.mp4 --expand
+# The --expand flag is only needed for the algorithm section at the end;
+# the arithmetic, square-root and formula examples work without it.
+
+# --- Numbers ---
+# A decimal comma or point may be used; spaces group thousands.
+1 234,5 + 678,75
+5 002,3 - 87,65
+4,71 * 13,6
+9 175,5 / 25
+
+# --- Simple operators and parentheses ---
+(1+1)*(2+2.1)
+2 + 3 * 4
+
+# --- Variables ---
 s = 1 234,5 + 678,75
 d = 5 002,3 - 87,65
 a = 4,71 * 13,6
 q_{i+1} = 9 175,5 / 25
 
-# lines with a backslash (or wrapped in $...$) are rendered as math formulas
+# --- Long multiplication with leading zeros skipped ---
+0,0012 * 0,0012
+
+# --- Meta commands ---
+x = 1 / 3 \meta div_digits=10
+
+# --- Square roots ---
+a = sqrt{2}
+sqrt{152,29}
+sqrt{2} \meta sqrt_digits=20
+sqrt{152,29} \meta sqrt_digits=6
+
+# --- Math formulas ---
 π \approx 3,141 6
 x_{n+1} = \frac{1}{2}\left(x_n + \frac{N}{x_n}\right)
+
+# --- Forced formula block ---
+\begin{latex}
+x_ 2 = 2,3333 / 2
+\frac{a}{b} = \sqrt{x}
+\end{latex}
+
+# --- Algorithms and the expander (requires --expand) ---
+\let N = 2
+\let x = 1
+\calc q = ${N} / ${x} \meta div_digits=2
+\calc s = ${x} + ${q}
+\calc x = ${s} / 2 label=x
+$x_1 = ${x}$
+
+# A compound \calc line, with a subscripted display name and a plain store name.
+\calc x_{k+1} = (${x} + ${N} / ${x}) / 2 label=x
+$x_1 = ${x}$
+
+# Repeat with per-iteration division precision.
+\repeat k = 1..3 digits 2 4 8
+\calc q = ${N} / ${x}
+\calc x = (${x} + ${q}) / 2 label=x
+$x_${k} = ${x}$
+\endrepeat
+
+# Conditional block.
+\if{${N} > 1}
+$N$ is greater than one
+\else
+$N$ is not greater than one
+\endif
+
+# Algorithm scope and title.
+\begin{algorithm}{Newton-Raphson for ${N}}
+\repeat k = 1..4 digits 2 4 8 16
+\calc q = ${N} / ${x}
+\calc s = ${x} + ${q}
+\calc x = ${s} / 2 label=x
+$x_${k} = ${x}$
+\endrepeat
+\end{algorithm}

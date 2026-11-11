@@ -11,7 +11,7 @@ so the view never pans back and forth (long division in particular stays stable)
 - A C++17 compiler
 - FreeType 2 development headers (`pkg-config --cflags freetype2`)
 - `ffmpeg` (encoding)
-- `bc` (the results are cross-checked against `bc` while generating)
+- `bc` (simple two-operand results are cross-checked against `bc` while generating)
 - `Courier New` (default: `/usr/share/fonts/truetype/msttcorefonts/cour.ttf`),
   a fixed-width font with a plain zero. If Courier New is not installed, the
   program falls back to Nimbus Mono PS, FreeMono, Noto Mono or DejaVu Sans Mono.
@@ -47,7 +47,7 @@ Both the input file and the output file are required, except with
 needed. The output may also be given with `-o out.mp4`. For example:
 
 ```sh
-./board examples.txt examples.mp4
+./board examples.txt examples.mp4 --expand
 ```
 
 - `--dry` parses the input and verifies the arithmetic without rendering.
@@ -162,7 +162,7 @@ Combine it with `--max-scene-seconds` when you also want a per-scene upper
 bound. `--speed` is a simpler uniform multiplier:
 
 ```sh
-./board examples.txt examples.mp4 --speed 2
+./board examples.txt examples.mp4 --expand --speed 2
 ```
 
 The order is: zoom-based auto-speed, then the per-scene cap, then the global
@@ -188,10 +188,58 @@ example:
 ./board nrlarge.txt nrlarge.mp4 --expand --max-scene-seconds 10 --threads 2
 ```
 
-Input is one operation per line. A decimal comma or a decimal point may be
-used (e.g. `1,5` or `1.5`), and spaces may be used as thousands separators.
-The operators `+ - * x × − / : ÷` are supported, as are optional variable
-names with a LaTeX-style index (`x_2`, `x_ 2`, `q_{i+1}`):
+
+## Tests
+
+```sh
+make test
+```
+
+This builds `board` and runs the regression cases in `tests/cases/`. Each case
+is a `NAME.txt` input with expected combined stdout/stderr in `NAME.expected`.
+An optional `NAME.args` file supplies extra flags (one per line), and
+`NAME.status` sets the expected exit status (default `0`). The tests use
+`--only-show-results` and `--show-expanded`, so they need no font or `ffmpeg`.
+
+
+# Input and Language
+
+Input is a text file with one expression per line.
+
+
+## Numbers
+A decimal comma or a decimal point may be used (e.g. `1,5` or `1.5` are equal),
+and spaces may be used as thousands separators.
+
+## Simple operators
+The operators `+ - * /` are supported:
+
+```text
+1 234,5 + 678,75
+5 002,3 - 87,65
+4,71 * 13,6
+9 175,5 / 25
+```
+
+Parentheses `()` and multiple operations may be used on one line. `*` and `/`
+bind more tightly than `+` and `-`, and parentheses override that. The whole
+expression is drawn in one scene, with its result below it:
+
+```text
+(1+1)*(2+2.1)
+2 + 3 * 4
+```
+
+A line containing `/` keeps at most `2 * N` significant fractional digits,
+where `N` is the largest number of significant digits among the numbers on the
+line. Leading zeros after the comma are free, integer digits are always kept in
+full, and the final result is truncated rather than rounded. `\meta
+div_digits=K` instead keeps at most `K` significant digits in total. Lines that
+use only `+`, `-`, and `*` are exact.
+
+## Variables
+Optional variable names with a LaTeX-style index (`x_2`, `x_ 2`, `q_{i+1}`)
+may be written before `=`:
 
 ```text
 s = 1 234,5 + 678,75
@@ -212,10 +260,9 @@ parsing and applies to that line only, e.g.:
 x = 1 / 3 \meta div_digits=10
 ```
 
-`div_digits=N` makes the division on that line keep at most `N` significant
-digits in the quotient. Leading zeros do not count and integer digits are
-always kept in full. It overrides both the default `2 * max(A, B)` rule and
-`--decimals`.
+`div_digits=N` makes a line containing division keep at most `N` significant
+digits in its result. Leading zeros do not count and integer digits are always
+kept in full. It overrides both the default `2 * N` rule and `--decimals`.
 
 Square roots are written `sqrt{N}` (no backslash) and are computed and drawn
 with the longhand square-root method, which is laid out like long division:
@@ -277,7 +324,7 @@ are ignored, and the contents are not checked against `bc`.
 Hand-writing every intermediate line of an algorithm is tedious. With
 `--expand`, a few directives are expanded into ordinary arithmetic and formula
 lines before anything is rendered. The directives are textual, so the normal
-parser still checks every arithmetic line against `bc`.
+parser still checks every arithmetic line.
 
 `\let NAME = VALUE` defines a numeric variable. `VALUE` may use either decimal
 separator and may contain `${NAME}` references. Values are stored without
@@ -286,12 +333,13 @@ anywhere in a later line, including inside math formulas. The `$` in `${...}`
 is independent of the `$...$` math delimiters: `$N = ${N}$` expands to
 `$N = 2$` before the formula is parsed.
 
-`\calc [NAME =] A OP B [label=VAR] [\meta ...]` renders one arithmetic line and
-stores its result as a variable. The left-hand side `NAME` is what appears on
-the board and, by default, is also the variable name. `label=VAR` stores the
-result under `VAR` instead. That is needed when the displayed name is not a
-plain variable name (for example a subscript such as `x_{k+1}`) or when there
-is no shown name at all:
+`\calc [NAME =] EXPR [label=VAR] [\meta ...]` renders one arithmetic line and
+stores its result as a variable. `EXPR` may use the same operators, parentheses
+and multiple operations as an ordinary line. The left-hand side `NAME` is what
+appears on the board and, by default, is also the variable name. `label=VAR`
+stores the result under `VAR` instead. That is needed when the displayed name is
+not a plain variable name (for example a subscript such as `x_{k+1}`) or when
+there is no shown name at all:
 
 ```text
 \calc x_{k+1} = ${s} / 2 label=x    # shows x_{k+1}, stores x
@@ -347,17 +395,6 @@ Run it with `./board examples-expand.txt out.mp4 --expand`. With
 numeric results and formula lines print unchanged (the algorithm title is a
 formula line).
 
-See `examples.txt` for a complete arithmetic example and
-`examples-expand.txt` for the algorithm example above.
-
-## Tests
-
-```sh
-make test
-```
-
-This builds `board` and runs the regression cases in `tests/cases/`. Each case
-is a `NAME.txt` input with expected combined stdout/stderr in `NAME.expected`.
-An optional `NAME.args` file supplies extra flags (one per line), and
-`NAME.status` sets the expected exit status (default `0`). The tests use
-`--only-show-results` and `--show-expanded`, so they need no font or `ffmpeg`.
+See `examples.txt` for a complete tour of the input language (run it with
+`--expand`) and `examples-expand.txt` for the Newton–Raphson example on its
+own.

@@ -1,0 +1,7 @@
+\let N = 2
+\let x = 1
+\calc q = ${N} / ${x} \meta div_digits=2
+\calc s = ${x} + ${q}
+\calc x = ${s} / 2 label=x
+\calc x_{k+1} = (${x} + ${N} / ${x}) / 2 label=x
+$x_1 = ${x}$
