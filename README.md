@@ -233,16 +233,14 @@ is repeated at the bottom:
 2 + 3 * 4
 ```
 
-If an intermediate division would not terminate, the line falls back to showing
-the expression and its result without the worked steps, because there is no
-finite decimal to carry into the next operation.
-
-A line containing `/` keeps at most `2 * N` significant fractional digits,
-where `N` is the largest number of significant digits among the numbers on the
-line. Leading zeros after the comma are free, integer digits are always kept in
-full, and the final result is truncated rather than rounded. `\meta
-div_digits=K` instead keeps at most `K` significant digits in total. Lines that
-use only `+`, `-`, and `*` are exact.
+Each division is worked to a finite decimal. `\meta div_digits=K` keeps at most
+`K` significant digits in total; otherwise the division keeps at most
+`2 * max(A, B)` significant fractional digits, where `A` and `B` are that
+division's operands. Leading zeros after the comma are free and integer digits
+are always kept in full. The displayed quotient is what the following operations
+use, so the worked board and the result always agree. `+`, `-`, and `*` are
+exact. A quotient that would need more digits is truncated rather than rounded;
+for example `1/8 * 2` works `1 / 8 = 0,12` and then `0,12 * 2 = 0,24`.
 
 ## Variables
 Optional variable names with a LaTeX-style index (`x_2`, `x_ 2`, `q_{i+1}`)

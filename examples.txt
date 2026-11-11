@@ -14,6 +14,7 @@
 # Each operation is worked out on the same board, left to right.
 (1+1)*(2+2.1)
 2 + 3 * 4
+1/8 * 2
 
 # --- Variables ---
 s = 1 234,5 + 678,75
