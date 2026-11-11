@@ -11,6 +11,7 @@
 9 175,5 / 25
 
 # --- Simple operators and parentheses ---
+# Each operation is worked out on the same board, left to right.
 (1+1)*(2+2.1)
 2 + 3 * 4
 

@@ -619,6 +619,41 @@ string ratToDecimal(const Rat& v, bool hasDiv, int divDigits, int maxSig) {
     if (!frac.empty()) out += "." + frac;
     return norm(out);
 }
+bool divisibleBySmall(const Big& a, int q) {
+    long long rem = 0;
+    for (int i = (int)a.size() - 1; i >= 0; i--) rem = (rem * 10 + a[i]) % q;
+    return rem == 0;
+}
+void divSmall(Big& a, int q) {
+    long long rem = 0;
+    for (int i = (int)a.size() - 1; i >= 0; i--) { long long v = rem * 10 + a[i]; a[i] = v / q; rem = v % q; }
+    trim(a);
+}
+bool ratIsFinite(const Rat& v) {  // does v have a terminating decimal expansion?
+    Big d = v.d;
+    while (!(d.size() == 1 && d[0] == 1)) {
+        if (divisibleBySmall(d, 2)) divSmall(d, 2);
+        else if (divisibleBySmall(d, 5)) divSmall(d, 5);
+        else return false;
+    }
+    return true;
+}
+// Convert an exact non-negative rational with a terminating expansion to the
+// finite decimal the drawing routines expect.
+bool ratToNum(const Rat& v, Num& out) {
+    if (v.neg && !isZero(v.n)) return false;
+    Big d = v.d;
+    int twos = 0, fives = 0;
+    while (divisibleBySmall(d, 2)) { divSmall(d, 2); twos++; }
+    while (divisibleBySmall(d, 5)) { divSmall(d, 5); fives++; }
+    if (!(d.size() == 1 && d[0] == 1)) return false;
+    int k = max(twos, fives);
+    Big rem;
+    Big q = divmodB(mulB(v.n, pow10B(k)), v.d, rem);
+    if (!isZero(rem)) return false;
+    out.d = q; out.dec = k; out.txt.clear();
+    return true;
+}
 string digits2str(const vector<int>& res, int dec) {  // res[k] = digit of exponent k-dec
     string s; vector<int> r = res; while ((int)r.size() <= dec) r.push_back(0);
     for (int k = r.size() - 1; k >= 0; k--) { s += char('0' + r[k]); if (k == dec && dec) s += '.'; }
@@ -656,6 +691,16 @@ struct EvalResult {
     string decimal;       // bc-style: '.' decimal separator, no thousand separators
     bool hasDiv = false;
     int opCount = 0;
+    int maxSig = 1;       // largest significant-digit count among the literals
+};
+struct ExprNode;
+using ExprPtr = unique_ptr<ExprNode>;
+struct ExprNode {
+    enum Kind { NUM, ADD, SUB, MUL, DIV, NEG, POS } kind = NUM;
+    Num num;               // NUM
+    ExprPtr l, r;          // binary: l op r; unary: r
+    Rat val;               // exact value, filled in by evalNode
+    bool finite = false;   // val has a terminating decimal expansion
 };
 struct ExprParser {
     const string& s; size_t i = 0; int lineNo;
@@ -666,43 +711,46 @@ struct ExprParser {
         die(m);
     }
     void skip() { while (i < s.size() && isspace((unsigned char)s[i])) i++; }
-    Rat parseExpr() {
-        Rat v = parseTerm();
+    ExprPtr node(ExprNode::Kind k, ExprPtr l, ExprPtr r = nullptr) {
+        auto n = make_unique<ExprNode>(); n->kind = k; n->l = move(l); n->r = move(r); return n;
+    }
+    ExprPtr parseExpr() {
+        ExprPtr v = parseTerm();
         for (;;) {
             skip();
             if (i < s.size() && (s[i] == '+' || s[i] == '-')) {
-                char op = s[i++]; Rat r = parseTerm(); opCount++;
-                v = op == '+' ? addRat(v, r) : subRat(v, r);
+                char op = s[i++]; ExprPtr r = parseTerm(); opCount++;
+                v = node(op == '+' ? ExprNode::ADD : ExprNode::SUB, move(v), move(r));
             } else break;
         }
         return v;
     }
-    Rat parseTerm() {
-        Rat v = parseFactor();
+    ExprPtr parseTerm() {
+        ExprPtr v = parseFactor();
         for (;;) {
             skip();
             if (i < s.size() && (s[i] == '*' || s[i] == '/')) {
-                char op = s[i++]; Rat r = parseFactor(); opCount++;
-                if (op == '*') v = mulRat(v, r);
-                else { hasDiv = true; v = divRat(v, r); }
+                char op = s[i++]; ExprPtr r = parseFactor(); opCount++;
+                if (op == '/') hasDiv = true;
+                v = node(op == '*' ? ExprNode::MUL : ExprNode::DIV, move(v), move(r));
             } else break;
         }
         return v;
     }
-    Rat parseFactor() {
+    ExprPtr parseFactor() {
         skip();
         if (i < s.size() && s[i] == '(') {
-            i++; Rat v = parseExpr(); skip();
+            i++; ExprPtr v = parseExpr(); skip();
             if (i >= s.size() || s[i] != ')') bad("missing ')' in expression");
             i++; return v;
         }
         if (i < s.size() && (s[i] == '+' || s[i] == '-')) {
-            char op = s[i++]; Rat v = parseFactor(); opCount++;
-            return op == '-' ? negRat(v) : v;
+            char op = s[i++]; ExprPtr v = parseFactor(); opCount++;
+            return node(op == '-' ? ExprNode::NEG : ExprNode::POS, move(v));
         }
         return parseNumber();
     }
-    Rat parseNumber() {
+    ExprPtr parseNumber() {
         skip();
         size_t start = i;
         while (i < s.size()) {
@@ -714,20 +762,39 @@ struct ExprParser {
         bool digit = false;
         for (char c : tok) if (isdigit((unsigned char)c)) digit = true;
         if (!digit) bad("expected a number");
-        Num n = parse(tok);
-        maxSig = max(maxSig, sigDigits(n));
-        return ratFromNum(n);
+        auto n = make_unique<ExprNode>(); n->kind = ExprNode::NUM; n->num = parse(tok);
+        maxSig = max(maxSig, sigDigits(n->num));
+        return n;
     }
 };
-EvalResult evalExpression(const string& expr, int divDigits = -1, int loopDiv = -1, int lineNo = 0) {
+Rat evalNode(ExprNode& n) {
+    switch (n.kind) {
+        case ExprNode::NUM: n.val = ratFromNum(n.num); n.finite = true; break;
+        case ExprNode::NEG: n.val = negRat(evalNode(*n.r)); n.finite = n.r->finite; break;
+        case ExprNode::POS: n.val = evalNode(*n.r); n.finite = n.r->finite; break;
+        default: {
+            Rat a = evalNode(*n.l), b = evalNode(*n.r);
+            if (n.kind == ExprNode::ADD) n.val = addRat(a, b);
+            else if (n.kind == ExprNode::SUB) n.val = subRat(a, b);
+            else if (n.kind == ExprNode::MUL) n.val = mulRat(a, b);
+            else n.val = divRat(a, b);
+            n.finite = ratIsFinite(n.val);
+        }
+    }
+    return n.val;
+}
+EvalResult evalExpression(const string& expr, int divDigits = -1, int loopDiv = -1, int lineNo = 0,
+                          ExprPtr* treeOut = nullptr) {
     ExprParser p(expr, lineNo);
-    Rat v = p.parseExpr();
+    ExprPtr tree = p.parseExpr();
     p.skip();
     if (p.i != expr.size()) p.bad("cannot parse expression: " + expr);
-    EvalResult r; r.hasDiv = p.hasDiv; r.opCount = p.opCount;
+    Rat v = evalNode(*tree);
+    EvalResult r; r.hasDiv = p.hasDiv; r.opCount = p.opCount; r.maxSig = p.maxSig;
     int dd = divDigits;
     if (dd < 0 && p.hasDiv && loopDiv >= 0) dd = loopDiv;
     r.decimal = ratToDecimal(v, p.hasDiv, p.hasDiv ? dd : -1, p.maxSig);
+    if (treeOut) *treeOut = move(tree);
     return r;
 }
 string decimalDisplay(const string& s) {
@@ -764,19 +831,6 @@ void finish(Scene& sc, const vector<int>& res, int dec, const string& expr) {
     sc.value = fmt(ref); sc.pause(20);
     if (sc.name.empty()) sc.text(" = " + sc.value, sc.titleEnd, 30, TITLE, 75);
     else { float x = writeName(sc, sc.name, 60, 130); sc.text(" = " + sc.value, x, 130, TITLE, 75); }
-}
-
-// A compound expression is drawn as one scene: the whole expression on the
-// title line and its result below.  This keeps every operation in the same
-// frame instead of splitting the line into several scenes.
-Scene exprScene(const string& name, const string& expr, const EvalResult& r) {
-    Scene sc = start(name, expr);
-    sc.value = fmt(r.decimal);
-    sc.pause(30);
-    float y = 130;
-    if (name.empty()) sc.text("= " + sc.value, 60, y, TITLE, 75);
-    else { float x = writeName(sc, name, 60, y); sc.text(" = " + sc.value, x, y, TITLE, 75); }
-    return sc;
 }
 
 // ---------------- algorithms ----------------
@@ -906,7 +960,7 @@ int divisionLength(const Num& A, const Big& d, int nInt, int cap, bool totalDigi
 }
 
 // long division, Swedish "trappan": divisor left of the bar, quotient above the dividend
-Scene divide(const Num& a, const Num& b, const string& op, const string& name, int divDigits = -1) {
+Scene divide(const Num& a, const Num& b, const string& op, const string& name, int divDigits = -1, int fracCap = -1) {
     Scene sc = start(name, fmtNum(a) + " " + op + " " + fmtNum(b));
     Big d = b.d; trim(d); if (isZero(d)) die("division by zero");
     Num A = a; int k = b.dec;  // move the comma k steps right in both numbers
@@ -917,8 +971,9 @@ Scene divide(const Num& a, const Num& b, const string& op, const string& name, i
     int nInt = A.d.size() - A.dec, nD = A.d.size();
     int N = max(sigDigits(a), sigDigits(b));  // max significant digits in the operands
     int decCap = divDigits >= 0 ? divDigits      // \meta div_digits=N overrides everything
-               : 2 * N;                          // significant quotient decimals: 2 * max(A, B)
-    if (divDigits < 0 && DECIMALS >= 0) decCap = min(decCap, DECIMALS);
+               : fracCap >= 0 ? fracCap           // explicit fractional-digit cap (compound root)
+               : 2 * N;                           // significant quotient decimals: 2 * max(A, B)
+    if (divDigits < 0 && fracCap < 0 && DECIMALS >= 0) decCap = min(decCap, DECIMALS);
     auto digit = [&](int c) { int i = nD - 1 - c; return i >= 0 ? A.d[i] : 0; };
     auto qdig = [&](Big& r) { int q = 9; while (cmp(mulS(d, q), r) > 0) q--; return q; };
     auto push10 = [&](Big& r, int dg) { r.insert(r.begin(), dg); trim(r); };
@@ -948,6 +1003,93 @@ Scene divide(const Num& a, const Num& b, const string& op, const string& name, i
     vector<int> res(qd.rbegin(), qd.rend());
     int dec = cEnd - nInt;
     finish(sc, res, dec, "scale=" + to_string(dec) + "\n" + bcform(a) + " / " + bcform(b));
+    return sc;
+}
+
+// A compound expression is worked out on one board: each binary operation is
+// drawn with the normal column algorithm, laid out left to right in evaluation
+// order, wrapping to a new row when the row gets too wide.
+bool canRenderTree(ExprNode& n, ExprNode* root) {
+    if (n.kind == ExprNode::NUM) return true;
+    if (n.kind == ExprNode::NEG || n.kind == ExprNode::POS) return canRenderTree(*n.r, root);
+    if (!canRenderTree(*n.l, root) || !canRenderTree(*n.r, root)) return false;
+    Num a, b;
+    if (!ratToNum(n.l->val, a) || !ratToNum(n.r->val, b)) return false;
+    if (&n != root && !n.finite) return false;  // an intermediate must be exact
+    return true;
+}
+void collectBlocks(ExprNode& n, ExprNode* root, int divDigits, int lineFracCap, vector<Scene>& out) {
+    if (n.kind == ExprNode::NUM) return;
+    if (n.kind == ExprNode::NEG || n.kind == ExprNode::POS) {
+        collectBlocks(*n.r, root, divDigits, lineFracCap, out); return;
+    }
+    collectBlocks(*n.l, root, divDigits, lineFracCap, out);
+    collectBlocks(*n.r, root, divDigits, lineFracCap, out);
+    Num a, b;
+    if (!ratToNum(n.l->val, a) || !ratToNum(n.r->val, b)) return;
+    bool isRoot = (&n == root);
+    switch (n.kind) {
+        case ExprNode::ADD: out.push_back(addsub(a, b, true, "")); break;
+        case ExprNode::SUB: out.push_back(addsub(a, b, false, "")); break;
+        case ExprNode::MUL: out.push_back(mul(a, b, "")); break;
+        case ExprNode::DIV:
+            if (isRoot) out.push_back(divide(a, b, "/", "", divDigits, divDigits < 0 ? lineFracCap : -1));
+            else out.push_back(divide(a, b, "/", "", -1, INT_MAX));  // exact intermediate
+            break;
+        default: break;
+    }
+}
+struct Block { Scene sc; float left, right, top, bottom; };
+Block measureBlock(Scene&& sc) {
+    float l = INF, r = -INF, t = INF, b = -INF;
+    for (auto& k : sc.s) {
+        auto bb = bbox(k);
+        l = min(l, bb[0] / SCALE); r = max(r, bb[2] / SCALE);
+        t = min(t, bb[1] / SCALE); b = max(b, bb[3] / SCALE);
+    }
+    if (sc.s.empty()) l = r = t = b = 0;
+    return {move(sc), l, r, t, b};
+}
+void mergeScene(Scene& dst, const Scene& src, float dx, float dy) {
+    float t0 = dst.T;
+    for (auto st : src.s) {
+        st.x += dx * SCALE; st.y += dy * SCALE;
+        st.x2 += dx * SCALE; st.y2 += dy * SCALE;
+        st.t0 += t0;
+        if (st.te < INF / 2) st.te += t0;
+        dst.s.push_back(st);
+    }
+    dst.T = t0 + src.T;
+}
+Scene exprScene(const string& name, const string& expr, const EvalResult& r, ExprNode* root,
+                int divDigits, int lineFracCap) {
+    Scene sc;
+    float x = 60;
+    if (!name.empty()) { x = writeName(sc, name, x, 30); x = sc.text(" = ", x, 30); }
+    sc.titleEnd = sc.text(expr, x, 30, TITLE, 30);
+
+    vector<Scene> raw;
+    if (root) collectBlocks(*root, root, divDigits, lineFracCap, raw);
+    vector<Block> blocks;
+    for (auto& b : raw) blocks.push_back(measureBlock(move(b)));
+
+    const float H_GAP = 60, V_GAP = 70, ROW_MAX = 1800;
+    float cursorX = 60, cursorY = 150, rowBottom = 150;
+    for (auto& b : blocks) {
+        float w = b.right - b.left;
+        if (cursorX > 60 && cursorX + w > ROW_MAX) {
+            cursorX = 60; cursorY = rowBottom + V_GAP; rowBottom = cursorY;
+        }
+        mergeScene(sc, b.sc, cursorX - b.left, cursorY - b.top);
+        rowBottom = max(rowBottom, cursorY + (b.bottom - b.top));
+        cursorX += w + H_GAP;
+    }
+    sc.value = fmt(r.decimal);
+    sc.pause(30);
+    float y = blocks.empty() ? 130.f : max(rowBottom, 150.f) + 100;
+    if (name.empty()) sc.text("= " + sc.value, 60, y, TITLE, 75);
+    else { float x2 = writeName(sc, name, 60, y); sc.text(" = " + sc.value, x2, y, TITLE, 75); }
+    sc.name = name;
     return sc;
 }
 
@@ -1759,14 +1901,23 @@ int main(int argc, char** argv) {
         name.erase(remove_if(name.begin(), name.end(), [](unsigned char c) { return isspace(c); }), name.end());
         if (!isArithmeticText(expr))
             die("cannot parse: " + body + "\n  (wrap it in \\begin{latex} ... \\end{latex} to render it as maths)");
-        EvalResult er = evalExpression(expr, meta.divDigits);
+        ExprPtr tree;
+        EvalResult er = evalExpression(expr, meta.divDigits, -1, 0, &tree);
         if (er.opCount == 0)
             die("cannot parse: " + body + "\n  (wrap it in \\begin{latex} ... \\end{latex} to render it as maths)");
         if (onlyResults) {
             results.push_back(decimalDisplay(er.decimal));
             continue;
         }
-        scenes.push_back(exprScene(name, expr, er));
+        int lineFracCap = 2 * max(1, er.maxSig);
+        bool worked = canRenderTree(*tree, tree.get());
+        // A worked non-division root must end at exactly the displayed result;
+        // otherwise the last block would show digits the final line truncates.
+        if (worked && tree->kind != ExprNode::DIV) {
+            string exact = ratIsFinite(tree->val) ? ratToDecimal(tree->val, false, -1, er.maxSig) : "";
+            if (exact != er.decimal) worked = false;
+        }
+        scenes.push_back(exprScene(name, expr, er, worked ? tree.get() : nullptr, meta.divDigits, lineFracCap));
         fprintf(stderr, "ok (expr): %.100s\n", l.c_str());
     }
     if (latexBlock) die("unterminated \\begin" + (latexEnv.empty() ? string() : "{" + latexEnv + "}") + " block");

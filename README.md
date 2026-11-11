@@ -223,12 +223,19 @@ The operators `+ - * /` are supported:
 
 Parentheses `()` and multiple operations may be used on one line. `*` and `/`
 bind more tightly than `+` and `-`, and parentheses override that. The whole
-expression is drawn in one scene, with its result below it:
+expression is worked out on one board: each operation is drawn with the normal
+column working, left to right in evaluation order, wrapping to a new row when
+the row gets too wide. The original expression is the title and the final result
+is repeated at the bottom:
 
 ```text
 (1+1)*(2+2.1)
 2 + 3 * 4
 ```
+
+If an intermediate division would not terminate, the line falls back to showing
+the expression and its result without the worked steps, because there is no
+finite decimal to carry into the next operation.
 
 A line containing `/` keeps at most `2 * N` significant fractional digits,
 where `N` is the largest number of significant digits among the numbers on the
