@@ -1,0 +1,13 @@
+# expander comments
+\let N = 2 # two
+\let x = 1 # one
+\calc q = ${N} / ${x} # divide
+\if{${N} = 2} # condition
+\calc s = ${x} + ${q}
+\else
+\calc s = 0
+\endif
+\repeat k = 1..2 # loop
+\calc r_${k} = ${s} + ${k}
+\endrepeat
+q # plain comment

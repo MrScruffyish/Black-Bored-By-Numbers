@@ -1,7 +1,7 @@
 # Examples for Black-Bored-By-Numbers.
 # Run with: ./board examples.txt examples.mp4 --expand
 # The --expand flag is only needed for the algorithm section at the end;
-# the arithmetic, square-root and formula examples work without it.
+# the arithmetic, variable, square-root and formula examples work without it.
 
 # --- Numbers ---
 # A decimal comma or point may be used; spaces group thousands.
@@ -11,16 +11,40 @@
 9 175,5 / 25
 
 # --- Simple operators and parentheses ---
+# A bare number is a value on its own.
+5   # a value, not a calculation
 # Each operation is worked out on the same board, left to right.
 (1+1)*(2+2.1)
 2 + 3 * 4
 1/8 * 2
 
 # --- Variables ---
-s = 1 234,5 + 678,75
-d = 5 002,3 - 87,65
-a = 4,71 * 13,6
-q_{i+1} = 9 175,5 / 25
+a = 5
+a
+b = a
+b
+age = 1+2
+x = age + 1
+x
+
+# The displayed decimal is what gets stored.
+q = 1/3
+q * 3
+
+# --- Indexed variables ---
+x_123 = 1+4
+q_{n+1} = 2       # n is undefined, so this is the literal name q_{n+1}
+x_123 * q_{n+1}
+
+# Iterate with an index that has a value.
+s_0 = 0
+i = 0
+s_{i+1} = s_i + i
+i = i + 1
+s_{i+1} = s_i + i
+i = i + 1
+s_{i+1} = s_i + i
+s_3
 
 # --- Long multiplication with leading zeros skipped ---
 0,0012 * 0,0012
@@ -35,14 +59,21 @@ sqrt{2} \meta sqrt_digits=20
 sqrt{152,29} \meta sqrt_digits=6
 
 # --- Math formulas ---
-π \approx 3,141 6
-x_{n+1} = \frac{1}{2}\left(x_n + \frac{N}{x_n}\right)
+$π \approx 3,141 6$
+$x_{n+1} = \frac{1}{2}\left(x_n + \frac{N}{x_n}\right)$
 
 # --- Forced formula block ---
 \begin{latex}
-x_ 2 = 2,3333 / 2
+x_2 = 2,3333 / 2
 \frac{a}{b} = \sqrt{x}
 \end{latex}
+
+# --- Value substitution ---
+k = 1
+$ a_k = 2 $    # writes a_k = 2
+$ a_@k = 2 $   # writes a_1 = 2
+a_@k = 5
+a_@k
 
 # --- Algorithms and the expander (requires --expand) ---
 \let N = 2
@@ -55,6 +86,8 @@ $x_1 = ${x}$
 # A compound \calc line, with a subscripted display name and a plain store name.
 \calc x_{k+1} = (${x} + ${N} / ${x}) / 2 label=x
 $x_1 = ${x}$
+\calc 10 + 5 label=total
+$total = ${total}$
 
 # Repeat with per-iteration division precision.
 \repeat k = 1..3 digits 2 4 8

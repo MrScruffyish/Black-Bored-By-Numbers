@@ -1,0 +1,25 @@
+# comments and blank lines
+
+5   # a bare value
+a = 5
+a
+b = a
+b
+age = 1+2
+x = age + 1
+x
+x_123 = 1+4
+q_{n+1} = 2
+x_123 * q_{n+1}
+s_0 = 0
+i = 0
+s_{i+1} = s_i + i
+s_1
+i = i + 1
+s_{i+1} = s_i + i
+s_2
+k = 1
+$ a_@k = 2 $
+$ a_k = 2 $
+a_@k = 5
+a_@k

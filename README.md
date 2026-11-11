@@ -39,12 +39,13 @@ make
                          [--format 360p|480p|720p|1080p|1440p|2160p|WxH]
                          [--camera fit|follow] [--zoom-lead S] [--auto-speed R] [--max-auto-speed X]
                          [--max-scene-seconds S] [--threads N] [--expand] [--show-expanded]
-                         [--stats] [--dry] [--only-show-results]
+                         [--syntax-check] [--stats] [--dry] [--only-show-results]
 ```
 
 Both the input file and the output file are required, except with
-`--only-show-results`, `--show-expanded` or `--stats`, where no output file is
-needed. The output may also be given with `-o out.mp4`. For example:
+`--only-show-results`, `--show-expanded`, `--syntax-check` or `--stats`, where no
+output file is needed. The output may also be given with `-o out.mp4`. For
+example:
 
 ```sh
 ./board examples.txt examples.mp4 --expand
@@ -58,6 +59,12 @@ needed. The output may also be given with `-o out.mp4`. For example:
   stdout, one per line, then exits without rendering. This is useful for seeing
   what `\let`, `\calc`, `\repeat`, `\if` and `${...}` produced. It cannot be
   combined with `--only-show-results`.
+- `--syntax-check` parses the input and reports every problem it finds, one per
+  line, prefixed with the line number. It prints `syntax OK: N lines` and exits
+  with status 0 when the file is valid, or lists the issues and exits with
+  status 1 otherwise. It does not render anything and needs no output file,
+  font or `ffmpeg`. It may be combined with `--expand`, but not with
+  `--show-expanded` or `--only-show-results`.
 - `--only-show-results` parses the input, computes each arithmetic result and
   prints just the numeric values to stdout, one per line, in input order,
   without thousand separators (the decimal comma is kept). Formula lines are
@@ -199,12 +206,14 @@ This builds `board` and runs the regression cases in `tests/cases/`. Each case
 is a `NAME.txt` input with expected combined stdout/stderr in `NAME.expected`.
 An optional `NAME.args` file supplies extra flags (one per line), and
 `NAME.status` sets the expected exit status (default `0`). The tests use
-`--only-show-results` and `--show-expanded`, so they need no font or `ffmpeg`.
+`--only-show-results`, `--show-expanded` and `--syntax-check`, so they need no
+font or `ffmpeg`.
 
 
 # Input and Language
 
-Input is a text file with one expression per line.
+Input is a text file with one expression per line.  Comments start with # and
+from there on, the rest of the line is ignored.
 
 
 ## Numbers
@@ -215,6 +224,7 @@ and spaces may be used as thousands separators.
 The operators `+ - * /` are supported:
 
 ```text
+5   # This is a valid statement, there is no calculation, just setting the value 5.
 1 234,5 + 678,75
 5 002,3 - 87,65
 4,71 * 13,6
@@ -242,16 +252,6 @@ use, so the worked board and the result always agree. `+`, `-`, and `*` are
 exact. A quotient that would need more digits is truncated rather than rounded;
 for example `1/8 * 2` works `1 / 8 = 0,12` and then `0,12 * 2 = 0,24`.
 
-## Variables
-Optional variable names with a LaTeX-style index (`x_2`, `x_ 2`, `q_{i+1}`)
-may be written before `=`:
-
-```text
-s = 1 234,5 + 678,75
-d = 5 002,3 - 87,65
-a = 4,71 * 13,6
-q_{i+1} = 9 175,5 / 25
-```
 
 Long multiplication is drawn with the usual partial products. Leading zero
 digits are not drawn in those rows, so `0,0012 * 0,0012` shows `24` and `12`
@@ -262,7 +262,7 @@ A meta command can be appended to the end of any line. It is stripped before
 parsing and applies to that line only, e.g.:
 
 ```text
-x = 1 / 3 \meta div_digits=10
+1 / 3 \meta div_digits=10
 ```
 
 `div_digits=N` makes a line containing division keep at most `N` significant
@@ -276,7 +276,7 @@ subtracted underneath. An optional variable name works as for the other
 operations:
 
 ```text
-a = sqrt{2}
+sqrt{2}
 sqrt{152,29}
 ```
 
@@ -299,15 +299,79 @@ sqrt{152,29} \meta sqrt_digits=6
 
 The second line gives `12,3405`.
 
-Lines containing a backslash (or wrapped in `$...$`) are rendered as math
-formulas instead. A small LaTeX subset is supported: `\frac{}{}`, `\sqrt{}`,
+
+
+## Variables
+
+A variable is a name that stores the value shown on the board. Assign with `=`,
+and use the bare name wherever a number is allowed:
+
+```text
+5           # a value on its own
+a = 5       # a = 5
+a           # 5
+b = a       # b = 5
+age = 1+2   # works 1+2, then shows age = 3
+x = age + 1 # x is now 4
+```
+
+Assignments and bare values are shown on one line. An assignment whose
+right-hand side is a calculation is also worked out on the board, then the
+final assignment is shown. Names are case-sensitive and may not contain spaces
+around `_`: `x_ 2` is an error.
+
+Values are stored as the decimal that was displayed, not as an exact fraction.
+So after `q = 1/3` (which displays `0,33`), `q * 3` is `0,99`.
+
+### Index
+
+Variable names can carry a LaTeX-style index (`x_2`, `q_{i+1}`). An index made
+only of digits is part of the name: `x_01` is an error, and `x_{123}` is the
+same variable as `x_123`.
+
+An index containing names is evaluated when every name in it already has a
+value; otherwise the whole index is literal text:
+
+```text
+x_123 = 1+4
+q_{n+1} = 2       # n is undefined, so this is the literal name q_{n+1}
+x_123 * q_{n+1}   # 5 * 2 = 10
+```
+
+With index variables you can iterate:
+
+```text
+s_0 = 0
+i = 0
+s_{i+1} = s_i + i  # i is 0, so this assigns s_1 = 0
+i = i + 1
+s_{i+1} = s_i + i  # s_2 = s_1 + 1 = 1
+i = i + 1
+s_{i+1} = s_i + i  # s_3 = s_2 + 2 = 3
+```
+
+An evaluated index must be a non-negative integer. Index expressions accept the
+same `+ - * /` and parentheses as ordinary arithmetic; a division must produce
+an integer, otherwise the line is an error. A symbolic index such as `i+1`
+stays literal and is rendered with LaTeX. Write `@` to force evaluation, for
+example `s_@{i+1}`.
+
+## LaTeX
+
+Lines wrapped in `$...$`, or containing a LaTeX command (a backslash) or a
+symbol such as `≈`, `≤` or `≥`, are rendered as math formulas instead of
+arithmetic. A small LaTeX subset is supported: `\frac{}{}`, `\sqrt{}`,
 `\left...\right`, `_`/`^` scripts, groups, and symbols such as `\approx`,
 `\times`, `\cdot`, `\pi` and `\infty`:
 
 ```text
-π \approx 3,141 6
-x_{n+1} = \frac{1}{2}\left(x_n + \frac{N}{x_n}\right)
+$π \approx 3,141 6$
+$x_{n+1} = \frac{1}{2}\left(x_n + \frac{N}{x_n}\right)$
 ```
+
+LaTeX text is literal: `x_i` stays `x_i` even when `i` has a value. Put `@`
+before a name or `{expression}` to substitute its value, as in `$x_@i$` or
+`$s_@{i+1}$`.
 
 To force one or more lines to be rendered as formulas without being parsed as
 arithmetic operations, wrap them in `\begin`/`\end`. The environment name is
@@ -315,7 +379,7 @@ optional, and if both markers have one they must match:
 
 ```text
 \begin{latex}
-x_ 2 = 2,3333 / 2
+x_2 = 2,3333 / 2
 \frac{a}{b} = \sqrt{x}
 \end{latex}
 ```
@@ -324,12 +388,34 @@ Each non-empty line inside the block becomes its own formula scene; the
 `\begin`/`\end` markers themselves are not rendered. Blank lines and comments
 are ignored, and the contents are not checked against `bc`.
 
+## Value substitution
+
+Inside LaTeX text, indices are literal. Put `@` before a name to force its
+value into the formula:
+
+```text
+k = 1
+$ a_k = 2 $    # writes  a_k = 2
+$ a_@k = 2 $   # writes  a_1 = 2
+```
+
+Outside LaTeX the `@` is optional, because an index is evaluated automatically
+when its names have values. Here `a_@k` is the variable `a_1`:
+
+```text
+a_@k = 5   # works because k is 1
+a_@k       # 5
+```
+
+If a name in a forced index has no value, the line is an error.
+
 ## Algorithms and the expander
 
 Hand-writing every intermediate line of an algorithm is tedious. With
 `--expand`, a few directives are expanded into ordinary arithmetic and formula
 lines before anything is rendered. The directives are textual, so the normal
-parser still checks every arithmetic line.
+parser still checks every arithmetic line. A `#` comment may follow any
+directive; it is ignored by the expander.
 
 `\let NAME = VALUE` defines a numeric variable. `VALUE` may use either decimal
 separator and may contain `${NAME}` references. Values are stored without

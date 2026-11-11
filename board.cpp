@@ -31,13 +31,90 @@ double MAX_SCENE_SECONDS = 30; // no single scene runs longer than this; 0 disab
 int THREADS = 0;               // render threads; 0 = automatic, 1 = serial
 FT_Library ft; FT_Face face;
 
-[[noreturn]] void die(const string& m) { fprintf(stderr, "error: %s\n", m.c_str()); exit(1); }
+// Errors normally stop the program.  --syntax-check turns them into exceptions
+// so that one bad line does not hide the rest of the file.
+struct BoardError { string msg; };
+bool COLLECT_ERRORS = false;
+[[noreturn]] void die(const string& m) {
+    if (COLLECT_ERRORS) throw BoardError{m};
+    fprintf(stderr, "error: %s\n", m.c_str());
+    exit(1);
+}
 
 string trimStr(const string& s) {
     size_t a = s.find_first_not_of(" \t");
     if (a == string::npos) return "";
     size_t b = s.find_last_not_of(" \t");
     return s.substr(a, b - a + 1);
+}
+
+// Split "code # comment" into the code and the comment (including '#').
+pair<string, string> splitComment(const string& s) {
+    size_t p = s.find('#');
+    if (p == string::npos) return {s, ""};
+    return {s.substr(0, p), s.substr(p)};
+}
+
+bool allDigitsText(const string& s) {
+    if (s.empty()) return false;
+    for (char c : s) if (!isdigit((unsigned char)c)) return false;
+    return true;
+}
+
+// A variable name with an optional LaTeX-style index.  The index is kept raw
+// here; resolveNameToken() decides whether it is evaluated or literal.
+struct NameToken {
+    string base;
+    bool hasIndex = false;
+    bool braced = false;
+    bool forceIndex = false;  // x_@k or x_@{...}
+    string index;
+    string written;           // exact source text, including any leading '@'
+    size_t end = 0;
+};
+
+// Parse a name starting at i.  Returns false when no name starts there.
+// Spaces around '_' are rejected: the name must be one compact token.
+bool parseNameAt(const string& s, size_t i, NameToken& t, int lineNo) {
+    size_t start = i;
+    if (i < s.size() && s[i] == '@') i++;
+    if (i >= s.size() || !isalpha((unsigned char)s[i])) return false;
+    t = NameToken{};
+    while (i < s.size() && isalnum((unsigned char)s[i])) t.base += s[i++];
+    if (i < s.size() && isspace((unsigned char)s[i])) {  // catch "x _2"
+        size_t j = i;
+        while (j < s.size() && isspace((unsigned char)s[j])) j++;
+        if (j < s.size() && s[j] == '_')
+            die("line " + to_string(lineNo) + ": variable names cannot contain spaces around '_'");
+    }
+    if (i < s.size() && s[i] == '_') {
+        i++;
+        t.hasIndex = true;
+        if (i < s.size() && s[i] == '@') { t.forceIndex = true; i++; }
+        if (i < s.size() && s[i] == '{') {
+            int depth = 1; size_t j = i + 1;
+            while (j < s.size() && depth) {
+                if (s[j] == '{') depth++;
+                else if (s[j] == '}') depth--;
+                if (depth) j++;
+            }
+            if (depth) die("line " + to_string(lineNo) + ": missing '}' in variable index");
+            t.index = trimStr(s.substr(i + 1, j - (i + 1)));
+            t.braced = true;
+            i = j + 1;
+        } else {
+            size_t b = i;
+            while (i < s.size() && isalnum((unsigned char)s[i])) i++;
+            if (i == b)
+                die("line " + to_string(lineNo) + ": variable index must follow '_' without spaces");
+            t.index = s.substr(b, i - b);
+        }
+        if (t.index.empty())
+            die("line " + to_string(lineNo) + ": empty variable index");
+    }
+    t.written = s.substr(start, i - start);
+    t.end = i;
+    return true;
 }
 
 // Video size presets.  A custom "WxH" value is accepted too.
@@ -398,6 +475,11 @@ Scene formula(const string& tex) {
     sc.pause(90);
     return sc;
 }
+void checkFormula(const string& tex) {
+    MathParser p(tex);
+    p.parseSeq(false);
+    if (!p.eof()) p.bad("math: unexpected '}'");
+}
 
 // ---------------- numbers ----------------
 struct Num { vector<int> d; int dec; string txt; };  // d[k] = digit of exponent k-dec
@@ -689,11 +771,23 @@ struct ExprNode {
     ExprPtr l, r;           // binary: l op r; unary: r
     Rat val;                // value, filled in by evalNode
     int divDigitsUsed = -1; // DIV: total significant digits, if set
+    // A name is resolved to a NUM node, but these fields remember what was
+    // written so the title can show the substituted value in its place.
+    bool fromName = false;
+    string valueText, original;
+    size_t spanStart = 0, spanEnd = 0;
 };
+struct UndefinedVar { string name; };
+struct VarContext {
+    const map<string, string>* vars = nullptr;
+    bool allowUndefined = false;  // used while probing an index expression
+    int lineNo = 0;
+};
+string resolveNameToken(const NameToken& t, const map<string, string>& vars, int lineNo);
 struct ExprParser {
-    const string& s; size_t i = 0; int lineNo;
+    const string& s; size_t i = 0; int lineNo; VarContext* ctx = nullptr;
     bool hasDiv = false; int opCount = 0;
-    ExprParser(const string& t, int ln) : s(t), lineNo(ln) {}
+    ExprParser(const string& t, int ln, VarContext* c = nullptr) : s(t), lineNo(ln), ctx(c) {}
     [[noreturn]] void bad(const string& m) const {
         if (lineNo > 0) die("line " + to_string(lineNo) + ": " + m);
         die(m);
@@ -736,7 +830,31 @@ struct ExprParser {
             char op = s[i++]; ExprPtr v = parseFactor(); opCount++;
             return node(op == '-' ? ExprNode::NEG : ExprNode::POS, move(v));
         }
+        if (i < s.size() && (isalpha((unsigned char)s[i]) || s[i] == '@')) return parseName();
         return parseNumber();
+    }
+    ExprPtr parseName() {
+        size_t start = i;
+        NameToken t;
+        if (!parseNameAt(s, i, t, lineNo)) bad("expected a number or variable");
+        i = t.end;
+        static const map<string, string> emptyVars;
+        const map<string, string>& vars = ctx && ctx->vars ? *ctx->vars : emptyVars;
+        string name = resolveNameToken(t, vars, lineNo);
+        auto it = vars.find(name);
+        if (it == vars.end()) {
+            if (ctx && ctx->allowUndefined) throw UndefinedVar{name};
+            bad("undefined variable: " + name);
+        }
+        auto n = make_unique<ExprNode>();
+        n->kind = ExprNode::NUM;
+        n->num = parse(it->second);
+        n->fromName = true;
+        n->original = t.written;
+        n->valueText = it->second;
+        n->spanStart = start;
+        n->spanEnd = t.end;
+        return n;
     }
     ExprPtr parseNumber() {
         skip();
@@ -766,29 +884,30 @@ bool operandNum(ExprNode& n, Num& out) {
 // 2 * max(A, B) significant fractional digits for that division's operands),
 // and that displayed value is what later operations use.  This is how the
 // worked board reads: nothing is carried in a form the viewer cannot see.
-Rat evalNode(ExprNode& n, int divDigits) {
+Rat evalNode(ExprNode& n, int divDigits, bool exactDiv = false) {
     switch (n.kind) {
         case ExprNode::NUM:
             n.val = ratFromNum(n.num);
             break;
         case ExprNode::NEG:
-            n.val = negRat(evalNode(*n.r, divDigits));
+            n.val = negRat(evalNode(*n.r, divDigits, exactDiv));
             break;
         case ExprNode::POS:
-            n.val = evalNode(*n.r, divDigits);
+            n.val = evalNode(*n.r, divDigits, exactDiv);
             break;
         case ExprNode::ADD:
         case ExprNode::SUB:
         case ExprNode::MUL: {
-            Rat a = evalNode(*n.l, divDigits), b = evalNode(*n.r, divDigits);
+            Rat a = evalNode(*n.l, divDigits, exactDiv), b = evalNode(*n.r, divDigits, exactDiv);
             if (n.kind == ExprNode::ADD) n.val = addRat(a, b);
             else if (n.kind == ExprNode::SUB) n.val = subRat(a, b);
             else n.val = mulRat(a, b);
             break;
         }
         case ExprNode::DIV: {
-            Rat a = evalNode(*n.l, divDigits), b = evalNode(*n.r, divDigits);
+            Rat a = evalNode(*n.l, divDigits, exactDiv), b = evalNode(*n.r, divDigits, exactDiv);
             Rat q = divRat(a, b);
+            if (exactDiv) { n.val = q; break; }
             Num an, bn;
             int capSig = 1;
             if (operandNum(*n.l, an) && operandNum(*n.r, bn)) capSig = max(sigDigits(an), sigDigits(bn));
@@ -803,8 +922,8 @@ Rat evalNode(ExprNode& n, int divDigits) {
     return n.val;
 }
 EvalResult evalExpression(const string& expr, int divDigits = -1, int loopDiv = -1, int lineNo = 0,
-                          ExprPtr* treeOut = nullptr) {
-    ExprParser p(expr, lineNo);
+                          ExprPtr* treeOut = nullptr, VarContext* ctx = nullptr) {
+    ExprParser p(expr, lineNo, ctx);
     ExprPtr tree = p.parseExpr();
     p.skip();
     if (p.i != expr.size()) p.bad("cannot parse expression: " + expr);
@@ -818,6 +937,102 @@ EvalResult evalExpression(const string& expr, int divDigits = -1, int loopDiv = 
     if (treeOut) *treeOut = move(tree);
     return r;
 }
+
+// Evaluate an index expression exactly.  Undefined names are reported as an
+// exception while probing, so the caller can fall back to a literal index.
+string evalIndexToString(const string& idx, const map<string, string>& vars, bool force, int lineNo) {
+    VarContext ctx{&vars, true, lineNo};
+    try {
+        ExprParser p(idx, lineNo, &ctx);
+        ExprPtr tree = p.parseExpr();
+        p.skip();
+        if (p.i != idx.size()) p.bad("invalid index expression: " + idx);
+        Rat v = evalNode(*tree, -1, true);
+        Num n;
+        if (v.neg || !ratToNum(v, n) || n.dec != 0)
+            die("line " + to_string(lineNo) + ": index is not a non-negative integer: " + idx);
+        return bcform(n);
+    } catch (const UndefinedVar&) {
+        if (force) die("line " + to_string(lineNo) + ": undefined variable in index: " + idx);
+        throw;
+    }
+}
+
+// Turn a parsed name into the key used in the variable map.  Numeric indices
+// lose their braces (x_{123} == x_123); an index is evaluated automatically
+// when every name in it is defined, otherwise the whole index stays literal.
+string resolveNameToken(const NameToken& t, const map<string, string>& vars, int lineNo) {
+    if (!t.hasIndex) return t.base;
+    const string& idx = t.index;
+    if (allDigitsText(idx)) {
+        if (idx.size() > 1 && idx[0] == '0')
+            die("line " + to_string(lineNo) + ": variable index has a leading zero: " + t.written);
+        return t.base + "_" + idx;
+    }
+    if (t.forceIndex) return t.base + "_" + evalIndexToString(idx, vars, true, lineNo);
+    try {
+        return t.base + "_" + evalIndexToString(idx, vars, false, lineNo);
+    } catch (const UndefinedVar&) {
+        // fall through to a literal index
+    }
+    bool simple = !idx.empty() && isalpha((unsigned char)idx[0]);
+    for (char c : idx) if (!isalnum((unsigned char)c)) simple = false;
+    if (simple || allDigitsText(idx)) return t.base + "_" + idx;
+    return t.base + "_{" + idx + "}";
+}
+
+// Replace every name operand in a title with the value it was resolved to.
+string substituteTitle(const string& expr, ExprNode* root) {
+    struct Repl { size_t start, end; string text; };
+    vector<Repl> reps;
+    function<void(ExprNode*)> walk = [&](ExprNode* n) {
+        if (!n) return;
+        if (n->fromName) reps.push_back({n->spanStart, n->spanEnd, n->valueText});
+        walk(n->l.get());
+        walk(n->r.get());
+    };
+    walk(root);
+    sort(reps.begin(), reps.end(), [](const Repl& a, const Repl& b) { return a.start > b.start; });
+    string out = expr;
+    for (auto& r : reps)
+        if (r.start <= r.end && r.end <= out.size()) out.replace(r.start, r.end - r.start, r.text);
+    return trimStr(out);
+}
+
+// '@' forces substitution in formula text.  @name inserts the variable's
+// value, while @{expr} evaluates an index expression.
+string substAt(const string& s, const map<string, string>& vars, int lineNo) {
+    if (s.find('@') == string::npos) return s;
+    string r; size_t i = 0;
+    while (i < s.size()) {
+        if (s[i] != '@') { r += s[i++]; continue; }
+        i++;
+        if (i < s.size() && s[i] == '{') {
+            int depth = 1; size_t j = i + 1;
+            while (j < s.size() && depth) {
+                if (s[j] == '{') depth++;
+                else if (s[j] == '}') depth--;
+                if (depth) j++;
+            }
+            if (depth) die("line " + to_string(lineNo) + ": missing '}' after '@'");
+            string idx = trimStr(s.substr(i + 1, j - (i + 1)));
+            r += evalIndexToString(idx, vars, true, lineNo);
+            i = j + 1;
+        } else {
+            NameToken t;
+            size_t j = i;
+            if (!parseNameAt(s, j, t, lineNo))
+                die("line " + to_string(lineNo) + ": '@' must be followed by a variable name or {expression}");
+            string name = resolveNameToken(t, vars, lineNo);
+            auto it = vars.find(name);
+            if (it == vars.end()) die("line " + to_string(lineNo) + ": undefined variable: " + name);
+            r += it->second;
+            i = t.end;
+        }
+    }
+    return r;
+}
+
 string decimalDisplay(const string& s) {
     string r = s;
     for (char& c : r) if (c == '.') c = ',';
@@ -825,8 +1040,9 @@ string decimalDisplay(const string& s) {
 }
 bool isArithmeticText(const string& s) {
     for (char c : s)
-        if (!(isdigit((unsigned char)c) || isspace((unsigned char)c) || c == '+' || c == '-' ||
-              c == '*' || c == '/' || c == '(' || c == ')' || c == '.' || c == ',')) return false;
+        if (!(isdigit((unsigned char)c) || isalpha((unsigned char)c) || isspace((unsigned char)c) ||
+              c == '+' || c == '-' || c == '*' || c == '/' || c == '(' || c == ')' ||
+              c == '.' || c == ',' || c == '_' || c == '{' || c == '}' || c == '@')) return false;
     return true;
 }
 
@@ -1107,6 +1323,39 @@ Scene exprScene(const string& name, const string& expr, const EvalResult& r, Exp
     return sc;
 }
 
+// A plain value or a simple assignment: one line, no worked steps.
+Scene valueScene(const string& name, const string& text, const string& value) {
+    Scene sc;
+    sc.name = name;
+    float x = 60;
+    if (!name.empty()) { x = writeName(sc, name, x, 30); x = sc.text(" = ", x, 30); }
+    sc.titleEnd = sc.text(text, x, 30, TITLE, 30);
+    sc.value = value;
+    sc.pause(75);
+    return sc;
+}
+
+// Split "name = expression" at the first assignment '='.  Comparisons such as
+// <= and != are left alone; they are not part of ordinary arithmetic anyway.
+bool splitAssignment(const string& s, string& lhs, string& rhs) {
+    for (size_t i = 0; i < s.size(); i++) {
+        if (s[i] != '=') continue;
+        if (i + 1 < s.size() && s[i + 1] == '=') continue;
+        if (i > 0 && (s[i - 1] == '<' || s[i - 1] == '>' || s[i - 1] == '!' || s[i - 1] == '=')) continue;
+        lhs = trimStr(s.substr(0, i));
+        rhs = trimStr(s.substr(i + 1));
+        return true;
+    }
+    return false;
+}
+
+// Display a stored decimal with the usual thousands grouping.
+string displayValue(const string& val) {
+    string dotted = val;
+    for (char& c : dotted) if (c == ',') c = '.';
+    return fmt(dotted);
+}
+
 // Square root by the longhand method, laid out like long division: the root
 // sits above the radicand as the quotient, each step's trial divisor is written
 // on the left, and the product is subtracted underneath.
@@ -1321,8 +1570,9 @@ struct Expander {
             string expr = trimStr(em[2]);
             if (expr.find('/') == string::npos) return body;
             for (char c : expr)
-                if (!(isdigit((unsigned char)c) || c == ' ' || c == '\t' || c == '+' || c == '-' ||
-                      c == '*' || c == '/' || c == '(' || c == ')' || c == '.' || c == ',')) return body;
+                if (!(isdigit((unsigned char)c) || isalpha((unsigned char)c) || isspace((unsigned char)c) ||
+                      c == '+' || c == '-' || c == '*' || c == '/' || c == '(' || c == ')' ||
+                      c == '.' || c == ',' || c == '_' || c == '@' || c == '{' || c == '}')) return body;
             hasDiv = true;
         }
         if (!hasDiv) return body;
@@ -1330,7 +1580,10 @@ struct Expander {
         if (takeMeta(copy).divDigits >= 0) return body;  // an explicit \meta wins
         return body + " \\meta div_digits=" + to_string(loopDiv);
     }
-    void processLine(const string& body, int lineNo, int loopDiv) {
+    void processLine(const string& rawBody, int lineNo, int loopDiv) {
+        auto [codePart, comment] = splitComment(rawBody);
+        string body = trimStr(codePart);
+        if (body.empty()) return;
         if (startsWithWord(body, "\\let")) {
             string rest = trimStr(body.substr(4));
             size_t eq = rest.find('=');
@@ -1385,13 +1638,15 @@ struct Expander {
             out.push_back(work + metaSuffix);
             return;
         }
-        out.push_back(applyLoopDiv(substVars(body, vars, lineNo), loopDiv));
+        out.push_back(applyLoopDiv(substVars(body, vars, lineNo), loopDiv) +
+                      (comment.empty() ? "" : " " + trimStr(comment)));
     }
+    static string codeOf(const string& s) { return trimStr(splitComment(s).first); }
     size_t matchingEnd(const vector<ExpandLine>& in, size_t start, int lineNo) {
         int depth = 1;
         for (size_t j = start; j < in.size(); j++) {
-            string b = trimStr(in[j].text);
-            if (b.empty() || b[0] == '#') continue;
+            string b = codeOf(in[j].text);
+            if (b.empty()) continue;
             if (startsWithWord(b, "\\repeat")) depth++;
             else if (startsWithWord(b, "\\endrepeat") && --depth == 0) return j;
         }
@@ -1434,8 +1689,8 @@ struct Expander {
     IfParts matchingIf(const vector<ExpandLine>& in, size_t start, int lineNo) {
         int depth = 1; IfParts p;
         for (size_t j = start; j < in.size(); j++) {
-            string b = trimStr(in[j].text);
-            if (b.empty() || b[0] == '#') continue;
+            string b = codeOf(in[j].text);
+            if (b.empty()) continue;
             if (b.compare(0, 3, "\\if") == 0) depth++;
             else if (b == "\\endif") {
                 if (--depth == 0) { p.endPos = j; return p; }
@@ -1464,8 +1719,8 @@ struct Expander {
     size_t matchingAlgorithm(const vector<ExpandLine>& in, size_t start, int lineNo) {
         int depth = 1;
         for (size_t j = start; j < in.size(); j++) {
-            string b = trimStr(in[j].text);
-            if (b.empty() || b[0] == '#') continue;
+            string b = codeOf(in[j].text);
+            if (b.empty()) continue;
             if (b.compare(0, 17, "\\begin{algorithm}") == 0) depth++;
             else if (b == "\\end{algorithm}" && --depth == 0) return j;
         }
@@ -1478,7 +1733,8 @@ struct Expander {
             int lineNo = in[i].no;
             size_t p = l.find_first_not_of(" \t");
             if (p == string::npos || l[p] == '#') { out.push_back(l); i++; continue; }
-            string body = trimStr(l);
+            string body = codeOf(l);
+            if (body.empty()) { out.push_back(l); i++; continue; }
             if (body == "\\else") die("line " + to_string(lineNo) + ": unexpected \\else");
             if (body == "\\endif") die("line " + to_string(lineNo) + ": unexpected \\endif");
             if (body == "\\end{algorithm}") die("line " + to_string(lineNo) + ": unexpected \\end{algorithm}");
@@ -1530,7 +1786,7 @@ struct Expander {
                 i = bodyEnd + 1;
                 continue;
             }
-            processLine(body, lineNo, loopDiv);
+            processLine(trimStr(l), lineNo, loopDiv);
             i++;
         }
     }
@@ -1775,7 +2031,7 @@ void render(Scene& sc, FILE* out, long& frameNo, long totalFrames) {
 int main(int argc, char** argv) {
     string in, out, enc = "libx264", font = "/usr/share/fonts/truetype/msttcorefonts/cour.ttf";
     bool fontGiven = false;
-    double minutes = 0, speed = 1; bool dry = false, onlyResults = false, expand = false, showExpanded = false, stats = false;
+    double minutes = 0, speed = 1; bool dry = false, onlyResults = false, expand = false, showExpanded = false, stats = false, syntaxCheck = false;
     for (int i = 1; i < argc; i++) {
         string a = argv[i];
         if (a == "-o") { if (++i == argc) die("-o requires an output file"); out = argv[i]; }
@@ -1791,6 +2047,7 @@ int main(int argc, char** argv) {
         }
         else if (a == "--expand") expand = true;
         else if (a == "--show-expanded") showExpanded = true;
+        else if (a == "--syntax-check") syntaxCheck = true;
         else if (a == "--stats") stats = true;
         else if (a == "--only-show-results") onlyResults = true;
         else if (a == "--font") { if (++i == argc) die("--font requires a path"); font = argv[i]; fontGiven = true; }
@@ -1822,10 +2079,11 @@ int main(int argc, char** argv) {
         else die("unexpected argument: " + a);
     }
     if (showExpanded && onlyResults) die("--show-expanded and --only-show-results are mutually exclusive");
+    if (syntaxCheck && (showExpanded || onlyResults)) die("--syntax-check cannot be combined with --show-expanded or --only-show-results");
     if (showExpanded) expand = true;
-    if (in.empty() || (!onlyResults && !showExpanded && !stats && out.empty())) die("usage: board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--font PATH] [--encoder h264_nvenc] [--format 360p|480p|720p|1080p|1440p|2160p|WxH] [--camera fit|follow] [--zoom-lead S] [--auto-speed R] [--max-auto-speed X] [--max-scene-seconds S] [--threads N] [--expand] [--show-expanded] [--stats] [--dry] [--only-show-results]\n       out.mp4 may be omitted with --only-show-results, --show-expanded or --stats");
+    if (in.empty() || (!onlyResults && !showExpanded && !stats && !syntaxCheck && out.empty())) die("usage: board ops.txt out.mp4 [--minutes M | --speed S] [--decimals N] [--font PATH] [--encoder h264_nvenc] [--format 360p|480p|720p|1080p|1440p|2160p|WxH] [--camera fit|follow] [--zoom-lead S] [--auto-speed R] [--max-auto-speed X] [--max-scene-seconds S] [--threads N] [--expand] [--show-expanded] [--syntax-check] [--stats] [--dry] [--only-show-results]\n       out.mp4 may be omitted with --only-show-results, --show-expanded, --syntax-check or --stats");
     AUTO_SPEED = max(0.f, AUTO_SPEED); MAX_AUTO_SPEED = max(1.f, MAX_AUTO_SPEED); ZOOM_LEAD = max(0.05f, ZOOM_LEAD);
-    if (!onlyResults && !showExpanded) {  // results/expanded only: no font, no rendering
+    if (!onlyResults && !showExpanded && !syntaxCheck) {  // results/expanded/check only: no font, no rendering
         if (FT_Init_FreeType(&ft)) die("freetype");
         vector<string> fonts = {font};
         if (!fontGiven)
@@ -1849,85 +2107,146 @@ int main(int argc, char** argv) {
         for (auto& l : inputLines) printf("%s\n", l.c_str());
         return 0;
     }
-    vector<Scene> scenes; vector<string> results; smatch m;
-    bool latexBlock = false; string latexEnv;
-    for (string l : inputLines) {
-        auto p = l.find_first_not_of(" \t"); if (p == string::npos || l[p] == '#') continue;
-        string body = l.substr(p, l.find_last_not_of(" \t") - p + 1);
+    vector<Scene> scenes; vector<string> results;
+    map<string, string> vars;
+    bool latexBlock = false; string latexEnv; int latexStartLine = 0;
+    bool checkOnly = syntaxCheck;
+
+    auto processLine = [&](const string& raw, int lineNo) {
+        auto [code, comment] = splitComment(raw);
+        string body = trimStr(code);
+        if (body.empty()) return;
         if (!expand && (startsWithWord(body, "\\let") || startsWithWord(body, "\\calc") ||
                         startsWithWord(body, "\\repeat") || startsWithWord(body, "\\endrepeat") ||
                         body.compare(0, 3, "\\if") == 0 || body == "\\else" || body == "\\endif" ||
                         body.compare(0, 17, "\\begin{algorithm}") == 0 || body == "\\end{algorithm}"))
             die("this directive requires --expand: " + body);
         Meta meta = takeMeta(body);
-        if (body.empty()) die("meta command needs an operation on the same line: " + l);
+        if (body.empty()) die("meta command needs an operation on the same line: " + raw);
         string env;
         if (latexBlock) {
             if (latexMarker(body, "\\end", env)) {
                 if (!latexEnv.empty() && !env.empty() && env != latexEnv)
                     die("mismatched \\end{" + env + "}, expected \\end{" + latexEnv + "}");
-                latexBlock = false; latexEnv.clear(); continue;
+                latexBlock = false; latexEnv.clear(); return;
             }
-            if (onlyResults) { results.push_back(body); continue; }  // latex as-is
-            if (body.size() >= 2 && body.front() == '$' && body.back() == '$') body = body.substr(1, body.size() - 2);
-            scenes.push_back(formula(body));
-            fprintf(stderr, "ok (latex): %.100s\n", body.c_str());
-            continue;
+            string tex = substAt(body, vars, lineNo);
+            if (checkOnly) { checkFormula(tex); return; }
+            if (onlyResults) { results.push_back(body); return; }  // latex as-is
+            if (tex.size() >= 2 && tex.front() == '$' && tex.back() == '$') tex = tex.substr(1, tex.size() - 2);
+            scenes.push_back(formula(tex));
+            fprintf(stderr, "ok (latex): %.100s\n", tex.c_str());
+            return;
         }
-        if (latexMarker(body, "\\begin", env)) { latexBlock = true; latexEnv = env; continue; }
+        if (latexMarker(body, "\\begin", env)) { latexBlock = true; latexEnv = env; latexStartLine = lineNo; return; }
         if (latexMarker(body, "\\end", env)) die("unexpected \\end without matching \\begin");
         bool math = body.find('\\') != string::npos || body.front() == '$' ||
                     body.find("≈") != string::npos || body.find("≤") != string::npos || body.find("≥") != string::npos;
         if (math) {
-            if (onlyResults) { results.push_back(body); continue; }  // latex as-is
-            if (body.size() >= 2 && body.front() == '$' && body.back() == '$') body = body.substr(1, body.size() - 2);
-            scenes.push_back(formula(body));
-            fprintf(stderr, "ok (math): %.100s\n", body.c_str());
-            continue;
+            string tex = substAt(body, vars, lineNo);
+            if (checkOnly) { checkFormula(tex); return; }
+            if (onlyResults) { results.push_back(body); return; }  // latex as-is
+            if (tex.size() >= 2 && tex.front() == '$' && tex.back() == '$') tex = tex.substr(1, tex.size() - 2);
+            scenes.push_back(formula(tex));
+            fprintf(stderr, "ok (math): %.100s\n", tex.c_str());
+            return;
         }
+
+        auto resolveLhs = [&](const string& text, const string& what) {
+            NameToken t;
+            string s = trimStr(text);
+            if (!parseNameAt(s, 0, t, lineNo) || t.end != s.size())
+                die("invalid variable name: " + text);
+            (void)what;
+            return resolveNameToken(t, vars, lineNo);
+        };
+
+        smatch m;
         if (regex_match(body, m, SQRT_RE)) {
-            Num n = parse(m[2]); string name = m[1];
-            name.erase(remove_if(name.begin(), name.end(), [](unsigned char c) { return isspace(c); }), name.end());
-            if (onlyResults) {
-                results.push_back(computeSqrtValue(n, meta.sqrtDigits));
-                continue;
-            }
+            Num n = parse(m[2]);
+            string name;
+            if (m[1].matched) name = resolveLhs(m[1], "sqrt");
+            string val = computeSqrtValue(n, meta.sqrtDigits);
+            if (!name.empty()) vars[name] = val;
+            if (onlyResults) { results.push_back(val); return; }
+            if (checkOnly) return;
             scenes.push_back(sqrtScene(n, name, meta.sqrtDigits));
             fprintf(stderr, "ok (sqrt): %.100s\n", body.c_str());
-            continue;
+            return;
         }
+        if (body.find("sqrt") != string::npos)
+            die("malformed square root: " + body + "\n  expected sqrt{NUMBER} or NAME = sqrt{NUMBER}");
         if (regex_match(body, m, ARITH_RE)) {
-            Num a = parse(m[2]), b = parse(m[4]); string op = m[3], name = m[1];
-            name.erase(remove_if(name.begin(), name.end(), [](unsigned char c) { return isspace(c); }), name.end());
-            if (onlyResults) {
-                results.push_back(computeValue(a, b, op, meta.divDigits));
-                continue;
-            }
+            Num a = parse(m[2]), b = parse(m[4]); string op = m[3];
+            string name;
+            if (m[1].matched) name = resolveLhs(m[1], "arithmetic");
+            string val = computeValue(a, b, op, meta.divDigits);
+            if (!name.empty()) vars[name] = val;
+            if (onlyResults) { results.push_back(val); return; }
+            if (checkOnly) return;
             scenes.push_back(op == "+" ? addsub(a, b, true, name) : op == "-" ? addsub(a, b, false, name)
                              : op == "/" ? divide(a, b, op, name, meta.divDigits) : mul(a, b, name));
-            fprintf(stderr, "ok (bc agrees): %.100s\n", l.c_str());
-            continue;
+            fprintf(stderr, "ok (bc agrees): %.100s\n", raw.c_str());
+            return;
         }
-        smatch em;
-        if (!regex_match(body, em, EXPR_LINE_RE))
+
+        string lhsText, expr;
+        bool assign = splitAssignment(body, lhsText, expr);
+        string name;
+        if (assign) name = resolveLhs(lhsText, "assignment");
+        else expr = body;
+        if (expr.empty())
             die("cannot parse: " + body + "\n  (wrap it in \\begin{latex} ... \\end{latex} to render it as maths)");
-        string name = em[1], expr = trimStr(em[2]);
-        name.erase(remove_if(name.begin(), name.end(), [](unsigned char c) { return isspace(c); }), name.end());
         if (!isArithmeticText(expr))
             die("cannot parse: " + body + "\n  (wrap it in \\begin{latex} ... \\end{latex} to render it as maths)");
+        VarContext ctx{&vars, false, lineNo};
         ExprPtr tree;
-        EvalResult er = evalExpression(expr, meta.divDigits, -1, 0, &tree);
-        if (er.opCount == 0)
-            die("cannot parse: " + body + "\n  (wrap it in \\begin{latex} ... \\end{latex} to render it as maths)");
-        if (onlyResults) {
-            results.push_back(decimalDisplay(er.decimal));
-            continue;
+        EvalResult er = evalExpression(expr, meta.divDigits, -1, 0, &tree, &ctx);
+        string val = decimalDisplay(er.decimal);
+        if (assign) vars[name] = val;
+        if (onlyResults) { results.push_back(val); return; }
+        if (checkOnly) return;
+        if (er.opCount == 0) {
+            string text = assign ? displayValue(val) : substituteTitle(expr, tree.get());
+            scenes.push_back(valueScene(name, text, displayValue(val)));
+            fprintf(stderr, "ok (value): %.100s\n", raw.c_str());
+            return;
         }
+        string title = substituteTitle(expr, tree.get());
         bool worked = canRenderTree(*tree);
-        scenes.push_back(exprScene(name, expr, er, worked ? tree.get() : nullptr));
-        fprintf(stderr, "ok (expr): %.100s\n", l.c_str());
+        scenes.push_back(exprScene(name, title, er, worked ? tree.get() : nullptr));
+        fprintf(stderr, "ok (expr): %.100s\n", raw.c_str());
+    };
+
+    vector<pair<int, string>> issues;
+    for (size_t i = 0; i < inputLines.size(); i++) {
+        COLLECT_ERRORS = syntaxCheck;
+        try {
+            processLine(inputLines[i], (int)i + 1);
+        } catch (const BoardError& e) {
+            if (!syntaxCheck) { COLLECT_ERRORS = false; throw; }
+            issues.push_back({(int)i + 1, e.msg});
+        }
+        COLLECT_ERRORS = false;
     }
-    if (latexBlock) die("unterminated \\begin" + (latexEnv.empty() ? string() : "{" + latexEnv + "}") + " block");
+    if (latexBlock) {
+        string msg = "unterminated \\begin" + (latexEnv.empty() ? string() : "{" + latexEnv + "}") + " block";
+        if (syntaxCheck) issues.push_back({latexStartLine, msg});
+        else die(msg);
+    }
+    if (syntaxCheck) {
+        for (auto& is : issues) {
+            string msg = is.second;
+            if (msg.compare(0, 5, "line ") == 0) printf("%s\n", msg.c_str());
+            else printf("line %d: %s\n", is.first, msg.c_str());
+        }
+        if (issues.empty()) {
+            printf("syntax OK: %zu line%s\n", inputLines.size(), inputLines.size() == 1 ? "" : "s");
+            return 0;
+        }
+        printf("%zu issue%s found\n", issues.size(), issues.size() == 1 ? "" : "s");
+        return 1;
+    }
     if (onlyResults) {
         for (auto& r : results) printf("%s\n", r.c_str());
         return 0;
