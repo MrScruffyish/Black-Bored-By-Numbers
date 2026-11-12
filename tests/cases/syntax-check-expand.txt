@@ -1,0 +1,7 @@
+N = 2
+\repeat k = 1..N
+r_@k = k + 1
+\endrepeat
+\if{N = 2}
+$ok$
+\endif
