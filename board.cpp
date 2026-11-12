@@ -1046,13 +1046,6 @@ bool isArithmeticText(const string& s) {
     return true;
 }
 
-// A line is treated as a LaTeX formula rather than arithmetic when it contains
-// a command or one of the comparison symbols the formula parser knows.
-bool looksLikeMath(const string& s) {
-    return s.find('\\') != string::npos || (!s.empty() && s.front() == '$') ||
-           s.find("≈") != string::npos || s.find("≤") != string::npos || s.find("≥") != string::npos;
-}
-
 // column grid: exponent e -> x of the digit cell; comma slot between e=0 and e=-1; gap every 3 digits
 struct Grid {
     float CX, slot = 0.5f;  // slot: width (in CW) reserved for the comma; 0 -> commas squeezed in
@@ -1477,7 +1470,25 @@ string computeSqrtValue(const Num& n, int sqrtDigits) {
 // \endif selects a block after evaluating a numeric comparison with bc, and
 // \begin{algorithm}{title} ... \end{algorithm} adds a formula title.
 const regex ARITH_RE(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?([0-9 .,]*[0-9,.])\s*(\+|-|\*|/)\s*([0-9 .,]*[0-9,.])\s*$)");
-const regex SQRT_RE(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?sqrt\s*\{\s*([0-9 .,]*[0-9,.])\s*\}\s*$)");
+const regex SQRT_RE(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?\\sqrt\s*\{\s*([0-9 .,]*[0-9,.])\s*\}\s*$)");
+// A numeric \sqrt line belongs to arithmetic even if its closing brace is
+// missing; a symbolic radicand such as \sqrt{x} stays a formula.
+bool looksLikeNumericSqrt(const string& s) {
+    string t = trimStr(s);
+    size_t eq = t.find('=');
+    if (eq != string::npos) t = trimStr(t.substr(eq + 1));
+    if (t.compare(0, 6, "\\sqrt{") != 0) return false;
+    for (size_t i = 6; i < t.size(); i++)
+        if (!(isdigit((unsigned char)t[i]) || t[i] == ' ' || t[i] == ',' || t[i] == '.')) return false;
+    return true;
+}
+// An arithmetic \sqrt line is calculated even though it contains a backslash;
+// inside $...$ or a latex block it is rendered as a formula instead.
+bool looksLikeMath(const string& s) {
+    if (regex_match(s, SQRT_RE) || looksLikeNumericSqrt(s)) return false;
+    return s.find('\\') != string::npos || (!s.empty() && s.front() == '$') ||
+           s.find("≈") != string::npos || s.find("≤") != string::npos || s.find("≥") != string::npos;
+}
 // An arithmetic line with an optional display name.  The expression itself is
 // checked by ExprParser; this only splits "name = expression".
 const regex EXPR_LINE_RE(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?(.*?)\s*$)");
@@ -1563,6 +1574,9 @@ struct Expander {
     map<string, string> vars;   // values known at expansion time
     map<string, int> loopVars;  // names currently provided by \repeat
     vector<string> out;
+    bool collecting = false;
+    vector<pair<int, string>>* issues = nullptr;
+    int currentLine = 0;
     string applyLoopDiv(const string& body, int loopDiv) {
         if (loopDiv < 0) return body;
         smatch m;
@@ -1650,8 +1664,8 @@ struct Expander {
         if (body.find("${") != string::npos)
             die("line " + to_string(lineNo) + ": ${...} is no longer supported; use a bare name or @name");
         string expanded = applyLoopDiv(expandLine(body, lineNo), loopDiv);
-        out.push_back(expanded + (comment.empty() ? "" : " " + trimStr(comment)));
         trackAssignment(expanded, lineNo);
+        out.push_back(expanded + (comment.empty() ? "" : " " + trimStr(comment)));
     }
     static string codeOf(const string& s) { return trimStr(splitComment(s).first); }
     size_t matchingEnd(const vector<ExpandLine>& in, size_t start, int lineNo) {
@@ -1743,6 +1757,7 @@ struct Expander {
         while (i < in.size()) {
             string l = in[i].text;
             int lineNo = in[i].no;
+            currentLine = lineNo;
             size_t p = l.find_first_not_of(" \t");
             if (p == string::npos || l[p] == '#') { out.push_back(l); i++; continue; }
             string body = codeOf(l);
@@ -1798,19 +1813,34 @@ struct Expander {
                 i = bodyEnd + 1;
                 continue;
             }
-            processLine(trimStr(l), lineNo, loopDiv);
+            try {
+                processLine(trimStr(l), lineNo, loopDiv);
+            } catch (const BoardError& e) {
+                if (!collecting) throw;
+                issues->push_back({lineNo, e.msg});
+            }
             i++;
         }
     }
-    vector<string> run(const vector<string>& in) {
+    vector<string> run(const vector<string>& in, bool collect, vector<pair<int, string>>& issueList) {
+        collecting = collect;
+        issues = &issueList;
         vector<ExpandLine> lines;
         for (size_t k = 0; k < in.size(); k++) lines.push_back({in[k], (int)k + 1});
         size_t i = 0;
-        block(lines, i, -1);
+        try {
+            block(lines, i, -1);
+        } catch (const BoardError& e) {
+            if (!collecting) throw;
+            issues->push_back({currentLine, e.msg});
+        }
         return out;
     }
 };
-vector<string> expandLines(const vector<string>& in) { Expander e; return e.run(in); }
+vector<string> expandLines(const vector<string>& in, bool collect, vector<pair<int, string>>& issues) {
+    Expander e;
+    return e.run(in, collect, issues);
+}
 
 Scene summary(const vector<Scene>& scenes) {
     Scene sc; sc.text("Summary", 60, 30, TITLE, 20); float y = 140;
@@ -2114,7 +2144,12 @@ int main(int argc, char** argv) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         inputLines.push_back(line);
     }
-    if (expand) inputLines = expandLines(inputLines);
+    vector<pair<int, string>> expanderIssues;
+    if (expand) {
+        COLLECT_ERRORS = syntaxCheck;
+        inputLines = expandLines(inputLines, syntaxCheck, expanderIssues);
+        COLLECT_ERRORS = false;
+    }
     if (showExpanded) {
         for (auto& l : inputLines) printf("%s\n", l.c_str());
         return 0;
@@ -2188,8 +2223,11 @@ int main(int argc, char** argv) {
             fprintf(stderr, "ok (sqrt): %.100s\n", body.c_str());
             return;
         }
-        if (body.find("sqrt") != string::npos)
-            die("malformed square root: " + body + "\n  expected sqrt{NUMBER} or NAME = sqrt{NUMBER}");
+        if (body.find("sqrt") != string::npos) {
+            if (body.find("\\sqrt") == string::npos)
+                die("square roots are written \\sqrt{NUMBER} or NAME = \\sqrt{NUMBER}: " + body);
+            die("malformed square root: " + body + "\n  expected \\sqrt{NUMBER} or NAME = \\sqrt{NUMBER}");
+        }
         if (regex_match(body, m, ARITH_RE)) {
             Num a = parse(m[2]), b = parse(m[4]); string op = m[3];
             string name;
@@ -2232,7 +2270,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "ok (expr): %.100s\n", raw.c_str());
     };
 
-    vector<pair<int, string>> issues;
+    vector<pair<int, string>> issues = expanderIssues;
     for (size_t i = 0; i < inputLines.size(); i++) {
         COLLECT_ERRORS = syntaxCheck;
         try {
@@ -2249,6 +2287,8 @@ int main(int argc, char** argv) {
         else die(msg);
     }
     if (syntaxCheck) {
+        sort(issues.begin(), issues.end());
+        issues.erase(unique(issues.begin(), issues.end()), issues.end());
         for (auto& is : issues) {
             string msg = is.second;
             if (msg.compare(0, 5, "line ") == 0) printf("%s\n", msg.c_str());

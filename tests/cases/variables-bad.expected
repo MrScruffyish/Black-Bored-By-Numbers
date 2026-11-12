@@ -3,7 +3,7 @@ line 3: variable index must follow '_' without spaces
 line 4: undefined variable: q
 line 6: index is not a non-negative integer: i
 line 7: undefined variable: nope
-line 8: malformed square root: sqrt{4
-  expected sqrt{NUMBER} or NAME = sqrt{NUMBER}
+line 8: malformed square root: \sqrt{4
+  expected \sqrt{NUMBER} or NAME = \sqrt{NUMBER}
 line 9: cannot parse expression: 1 x 2
 7 issues found

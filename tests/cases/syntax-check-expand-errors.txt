@@ -1,0 +1,6 @@
+N = 2
+\repeat k = 1..N
+r_@k = k + 1
+bad = missing
+worse = also_missing
+\endrepeat

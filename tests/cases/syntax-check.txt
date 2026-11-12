@@ -4,4 +4,4 @@ b = a + 1
 c_1 = b * 2   # trailing comment
 
 $ c_@b $
-sqrt{9}
+\sqrt{9}

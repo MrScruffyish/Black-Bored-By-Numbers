@@ -1,0 +1,7 @@
+\sqrt{9}
+a = \sqrt{2}
+\sqrt{152,29} \meta sqrt_digits=6
+$\sqrt{9}$
+\begin{latex}
+\sqrt{9}
+\end{latex}

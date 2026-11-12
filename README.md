@@ -269,22 +269,24 @@ parsing and applies to that line only, e.g.:
 digits in its result. Leading zeros do not count and integer digits are always
 kept in full. It overrides both the default `2 * N` rule and `--decimals`.
 
-Square roots are written `sqrt{N}` (no backslash) and are computed and drawn
-with the longhand square-root method, which is laid out like long division:
-the root above the radicand, the trial divisors on the left and the products
-subtracted underneath. An optional variable name works as for the other
-operations:
+Square roots are written `\sqrt{N}`, using the same command as LaTeX, and are
+computed and drawn with the longhand square-root method, which is laid out like
+long division: the root above the radicand, the trial divisors on the left and
+the products subtracted underneath. A line containing only `\sqrt{NUMBER}` is
+arithmetic and is calculated. Inside `$...$` or a `\begin{latex}` block the
+same command is rendered as a formula instead. An optional variable name works
+as for the other operations:
 
 ```text
-sqrt{2}
-sqrt{152,29}
+\sqrt{2}
+\sqrt{152,29}
 ```
 
 `N` may use a decimal comma or point. The digits are paired outwards from the
 decimal point, and an odd fractional tail is padded with a zero. For example,
-`sqrt{152,29}` works on the pairs `1`, `52`, `29`, so the root has two integer
+`\sqrt{152,29}` works on the pairs `1`, `52`, `29`, so the root has two integer
 digits and starts `12,34...`. The default result is `12,34058345`. An exact
-root stops as soon as the remainder is zero, so `sqrt{152,2756}` is `12,34`.
+root stops as soon as the remainder is zero, so `\sqrt{152,2756}` is `12,34`.
 
 By default the root keeps at most `2 * D` significant digits, where `D` is the
 number of digits in the radicand (leading zeros excluded), mirroring the
@@ -293,11 +295,12 @@ in full. Digits beyond the limit are truncated, not rounded. A per-line
 `\meta sqrt_digits=K` overrides this:
 
 ```text
-sqrt{2} \meta sqrt_digits=20
-sqrt{152,29} \meta sqrt_digits=6
+\sqrt{2} \meta sqrt_digits=20
+\sqrt{152,29} \meta sqrt_digits=6
 ```
 
-The second line gives `12,3405`.
+The second line gives `12,3405`. Write `\sqrt`, not `sqrt`: the backslash marks
+the special command, exactly as in LaTeX.
 
 
 

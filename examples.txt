@@ -54,10 +54,10 @@ s_3
 x = 1 / 3 \meta div_digits=10
 
 # --- Square roots ---
-a = sqrt{2}
-sqrt{152,29}
-sqrt{2} \meta sqrt_digits=20
-sqrt{152,29} \meta sqrt_digits=6
+a = \sqrt{2}
+\sqrt{152,29}
+\sqrt{2} \meta sqrt_digits=20
+\sqrt{152,29} \meta sqrt_digits=6
 
 # --- Math formulas ---
 $π \approx 3,141 6$
