@@ -116,6 +116,29 @@ example:
   `0,002`. Integer digits are always kept in full. A per-line
   `\meta div_digits=N` overrides this (see below).
 
+### Shell completion
+
+`board-completion.bash` completes the options and the input/output filenames in
+bash. With the `bash-completion` package installed, install it as a per-command
+completion script:
+
+```sh
+mkdir -p ~/.local/share/bash-completion/completions
+cp board-completion.bash ~/.local/share/bash-completion/completions/board
+```
+
+Then `./board <TAB>` lists the options. The file name in the completions
+directory must be `board` without the `.bash` suffix, because bash-completion
+falls back to the command's basename when the command is written with a path.
+Without bash-completion, source the script from `~/.bashrc` instead:
+
+```sh
+source /path/to/board-completion.bash
+```
+
+Completion covers every option, the `--format` presets, `--camera fit|follow`,
+the common `--encoder` values, `.txt` input files and `.mp4` output files.
+
 ### Controlling speed and length
 
 There are two levels of control:
