@@ -1,22 +1,22 @@
-\let N = 5
+N = 5
 \begin{algorithm}{Branch test}
-\if{${N} > 3}
+\if{N > 3}
 $big$
 \else
 $small$
 \endif
-\if{${N} = 5}
+\if{N = 5}
 $single equals$
 \endif
-\if{${N} <> 4}
+\if{N <> 4}
 $not four$
 \endif
 \repeat k = 1..3
-\if{${k} == 2}
+\if{k == 2}
 $two$
 \else
-$not two: ${k}$
+$not two: @k$
 \endif
 \endrepeat
 \end{algorithm}
-$N = ${N}$
+$N = @N$

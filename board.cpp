@@ -1046,6 +1046,13 @@ bool isArithmeticText(const string& s) {
     return true;
 }
 
+// A line is treated as a LaTeX formula rather than arithmetic when it contains
+// a command or one of the comparison symbols the formula parser knows.
+bool looksLikeMath(const string& s) {
+    return s.find('\\') != string::npos || (!s.empty() && s.front() == '$') ||
+           s.find("≈") != string::npos || s.find("≤") != string::npos || s.find("≥") != string::npos;
+}
+
 // column grid: exponent e -> x of the digit cell; comma slot between e=0 and e=-1; gap every 3 digits
 struct Grid {
     float CX, slot = 0.5f;  // slot: width (in CW) reserved for the comma; 0 -> commas squeezed in
@@ -1463,45 +1470,44 @@ string computeSqrtValue(const Num& n, int sqrtDigits) {
 
 // ---------------- input expander ----------------
 // The optional --expand preprocessor turns a few small directives into ordinary
-// input lines.  It is deliberately textual: \let stores a number, ${NAME}
-// substitutes it, \calc renders one arithmetic line while remembering its
-// displayed result, \repeat ... \endrepeat repeats a block (optionally
-// applying a per-iteration div_digits), \if{...} ... \else ... \endif
-// selects a block after evaluating a numeric comparison with bc, and
-// \begin{algorithm}{title} ... \end{algorithm} adds a formula title and a
-// variable scope.
+// input lines.  Variables are the same as in the rest of the language: ordinary
+// assignments are passed through and remembered so that \if conditions and
+// \repeat bounds can use them.  \repeat ... \endrepeat repeats a block
+// (optionally applying a per-iteration div_digits), \if{...} ... \else ...
+// \endif selects a block after evaluating a numeric comparison with bc, and
+// \begin{algorithm}{title} ... \end{algorithm} adds a formula title.
 const regex ARITH_RE(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?([0-9 .,]*[0-9,.])\s*(\+|-|\*|/)\s*([0-9 .,]*[0-9,.])\s*$)");
 const regex SQRT_RE(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?sqrt\s*\{\s*([0-9 .,]*[0-9,.])\s*\}\s*$)");
 // An arithmetic line with an optional display name.  The expression itself is
 // checked by ExprParser; this only splits "name = expression".
 const regex EXPR_LINE_RE(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?(.*?)\s*$)");
-const regex VAR_RE(R"([A-Za-z][A-Za-z0-9_]*)");
-const regex LABEL_RE(R"(\s+label\s*=\s*([A-Za-z][A-Za-z0-9_]*)\s*$)");
 
 bool startsWithWord(const string& s, const string& w) {
     return s.compare(0, w.size(), w) == 0 && (s.size() == w.size() || isspace((unsigned char)s[w.size()]));
 }
-string displayNumber(const Num& n) {
-    string s = bcform(n);
-    for (char& c : s) if (c == '.') c = ',';  // no thousand separators, keep the decimal comma
-    return s;
-}
-string substVars(const string& s, const map<string, string>& vars, int lineNo) {
+// Replace bare variable names by their values.  Used for expander-time values
+// such as \if conditions and \repeat bounds, where ${...} used to be needed.
+string substNames(const string& s, const map<string, string>& vars, int lineNo) {
     string r; size_t i = 0;
     while (i < s.size()) {
-        if (s[i] == '$' && i + 1 < s.size() && s[i + 1] == '{') {
-            int depth = 1; size_t j = i + 2;
-            while (j < s.size() && depth) {
-                if (s[j] == '{') depth++;
-                else if (s[j] == '}') depth--;
-                if (depth) j++;
-            }
-            if (depth) die("line " + to_string(lineNo) + ": missing '}' in ${...}");
-            string name = trimStr(s.substr(i + 2, j - (i + 2)));
+        if (isalpha((unsigned char)s[i])) {
+            size_t j = i;
+            while (j < s.size() && (isalnum((unsigned char)s[j]) || s[j] == '_')) j++;
+            string name = s.substr(i, j - i);
             auto it = vars.find(name);
-            if (it == vars.end()) die("line " + to_string(lineNo) + ": undefined variable: " + name);
+            if (it == vars.end())
+                die("line " + to_string(lineNo) + ": undefined variable: " + name);
             r += it->second;
-            i = j + 1;
+            i = j;
+        } else if (s[i] == '@' && i + 1 < s.size() && isalpha((unsigned char)s[i + 1])) {
+            size_t j = i + 1;
+            while (j < s.size() && (isalnum((unsigned char)s[j]) || s[j] == '_')) j++;
+            string name = s.substr(i + 1, j - (i + 1));
+            auto it = vars.find(name);
+            if (it == vars.end())
+                die("line " + to_string(lineNo) + ": undefined variable: " + name);
+            r += it->second;
+            i = j;
         } else r += s[i++];
     }
     return r;
@@ -1521,14 +1527,14 @@ struct RepeatHeader {
     vector<int> digits;  // optional per-iteration div_digits; one value repeats for all
 };
 RepeatHeader parseRepeat(const string& body, int lineNo, const map<string, string>& vars) {
-    string rest = substVars(trimStr(body.substr(7)), vars, lineNo);  // \repeat
-    static const regex re(R"(^([A-Za-z][A-Za-z0-9_]*)\s*=\s*([0-9]+)\s*\.\.\s*([0-9]+)\s*(.*)$)");
+    string rest = trimStr(body.substr(7));  // \repeat
+    static const regex re(R"(^([A-Za-z][A-Za-z0-9_]*)\s*=\s*([A-Za-z0-9_]+)\s*\.\.\s*([A-Za-z0-9_]+)\s*(.*)$)");
     smatch m;
     if (!regex_match(rest, m, re))
         die("line " + to_string(lineNo) + ": \\repeat needs NAME = START..END [digits ...]");
     RepeatHeader h; h.var = m[1];
-    h.start = parseCount(m[2], lineNo, "repeat start");
-    h.end = parseCount(m[3], lineNo, "repeat end");
+    h.start = parseCount(substNames(m[2], vars, lineNo), lineNo, "repeat start");
+    h.end = parseCount(substNames(m[3], vars, lineNo), lineNo, "repeat end");
     if (h.start > h.end) die("line " + to_string(lineNo) + ": \\repeat start is after its end");
     string tail = trimStr(m[4]);
     if (!tail.empty()) {
@@ -1554,7 +1560,8 @@ RepeatHeader parseRepeat(const string& body, int lineNo, const map<string, strin
     return h;
 }
 struct Expander {
-    map<string, string> vars;
+    map<string, string> vars;   // values known at expansion time
+    map<string, int> loopVars;  // names currently provided by \repeat
     vector<string> out;
     string applyLoopDiv(const string& body, int loopDiv) {
         if (loopDiv < 0) return body;
@@ -1580,66 +1587,71 @@ struct Expander {
         if (takeMeta(copy).divDigits >= 0) return body;  // an explicit \meta wins
         return body + " \\meta div_digits=" + to_string(loopDiv);
     }
+    static bool isNameChar(char c) { return isalnum((unsigned char)c) || c == '_'; }
+    // Replace a loop variable used as a bare name.  A preceding '_' still
+    // counts as a boundary, so x_k becomes x_1; a following name character
+    // does not, so x_k2 and kilo are left alone.
+    static string replaceBare(const string& s, const string& name, const string& val) {
+        string r; size_t i = 0;
+        while (i < s.size()) {
+            if (s.compare(i, name.size(), name) == 0) {
+                size_t end = i + name.size();
+                bool before = i == 0 || !isNameChar(s[i - 1]) || s[i - 1] == '_';
+                bool after = end >= s.size() || !isNameChar(s[end]);
+                if (before && after) { r += val; i = end; continue; }
+            }
+            r += s[i++];
+        }
+        return r;
+    }
+    // @name is substituted everywhere; bare loop variables are substituted in
+    // arithmetic lines only, because LaTeX text is literal.
+    string expandLine(const string& body, int lineNo) {
+        string r = substAt(body, vars, lineNo);
+        string check = body;
+        takeMeta(check);
+        if (!looksLikeMath(check)) {
+            size_t cut = r.find("\\meta");
+            string code = cut == string::npos ? r : r.substr(0, cut);
+            string suffix = cut == string::npos ? "" : r.substr(cut);
+            for (auto& [name, depth] : loopVars)
+                code = replaceBare(code, name, vars[name]);
+            r = code + suffix;
+        }
+        return r;
+    }
+    // Remember ordinary assignments so that \if conditions and \repeat bounds
+    // can use them.  The main parser stores the same values again for display.
+    void trackAssignment(const string& body, int lineNo) {
+        string work = body;
+        Meta meta = takeMeta(work);
+        if (looksLikeMath(work)) return;
+        string lhs, rhs;
+        if (!splitAssignment(work, lhs, rhs)) return;
+        NameToken t;
+        if (!parseNameAt(lhs, 0, t, lineNo) || t.end != lhs.size()) return;
+        string name = resolveNameToken(t, vars, lineNo);
+        smatch m;
+        if (regex_match(rhs, m, SQRT_RE)) {
+            vars[name] = computeSqrtValue(parse(m[2]), meta.sqrtDigits);
+            return;
+        }
+        if (rhs.empty() || !isArithmeticText(rhs)) return;
+        VarContext ctx{&vars, false, lineNo};
+        EvalResult er = evalExpression(rhs, meta.divDigits, -1, lineNo, nullptr, &ctx);
+        vars[name] = decimalDisplay(er.decimal);
+    }
     void processLine(const string& rawBody, int lineNo, int loopDiv) {
         auto [codePart, comment] = splitComment(rawBody);
         string body = trimStr(codePart);
         if (body.empty()) return;
-        if (startsWithWord(body, "\\let")) {
-            string rest = trimStr(body.substr(4));
-            size_t eq = rest.find('=');
-            if (eq == string::npos) die("line " + to_string(lineNo) + ": \\let needs NAME = VALUE");
-            string name = trimStr(rest.substr(0, eq)), val = trimStr(rest.substr(eq + 1));
-            if (!regex_match(name, VAR_RE))
-                die("line " + to_string(lineNo) + ": invalid variable name: " + name);
-            if (val.empty()) die("line " + to_string(lineNo) + ": \\let needs a value");
-            Num n = parse(substVars(val, vars, lineNo));
-            vars[name] = displayNumber(n);
-            return;
-        }
-        if (startsWithWord(body, "\\calc")) {
-            string work = substVars(trimStr(body.substr(5)), vars, lineNo);
-            Meta meta; string label;
-            for (;;) {  // accept \meta and label= in either order
-                bool changed = false;
-                Meta m = takeMeta(work);
-                if (m.divDigits >= 0) {
-                    if (meta.divDigits >= 0) die("line " + to_string(lineNo) + ": duplicate meta command: \\meta div_digits");
-                    meta.divDigits = m.divDigits; changed = true;
-                }
-                if (m.sqrtDigits >= 0) {
-                    if (meta.sqrtDigits >= 0) die("line " + to_string(lineNo) + ": duplicate meta command: \\meta sqrt_digits");
-                    meta.sqrtDigits = m.sqrtDigits; changed = true;
-                }
-                smatch lm;
-                if (regex_search(work, lm, LABEL_RE)) {
-                    if (!label.empty()) die("line " + to_string(lineNo) + ": duplicate label");
-                    label = lm[1]; work = lm.prefix().str(); changed = true;
-                }
-                if (!changed) break;
-            }
-            work = trimStr(work);
-            smatch em;
-            if (!regex_match(work, em, EXPR_LINE_RE))
-                die("line " + to_string(lineNo) + ": cannot parse \\calc: " + work);
-            string shown = em[1], expr = trimStr(em[2]);
-            if (expr.empty()) die("line " + to_string(lineNo) + ": \\calc needs an expression");
-            if (!isArithmeticText(expr))
-                die("line " + to_string(lineNo) + ": cannot parse \\calc: " + work);
-            EvalResult r = evalExpression(expr, meta.divDigits, loopDiv, lineNo);
-            if (r.opCount == 0)
-                die("line " + to_string(lineNo) + ": cannot parse \\calc: " + work);
-            if (r.hasDiv && meta.divDigits < 0 && loopDiv >= 0) meta.divDigits = loopDiv;
-            shown.erase(remove_if(shown.begin(), shown.end(), [](unsigned char c) { return isspace(c); }), shown.end());
-            string store = label.empty() ? shown : label;
-            if (!store.empty()) vars[store] = decimalDisplay(r.decimal);
-            string metaSuffix;
-            if (meta.divDigits >= 0) metaSuffix += " \\meta div_digits=" + to_string(meta.divDigits);
-            if (meta.sqrtDigits >= 0) metaSuffix += " \\meta sqrt_digits=" + to_string(meta.sqrtDigits);
-            out.push_back(work + metaSuffix);
-            return;
-        }
-        out.push_back(applyLoopDiv(substVars(body, vars, lineNo), loopDiv) +
-                      (comment.empty() ? "" : " " + trimStr(comment)));
+        if (startsWithWord(body, "\\let") || startsWithWord(body, "\\calc"))
+            die("line " + to_string(lineNo) + ": \\let and \\calc are no longer needed; write an ordinary assignment");
+        if (body.find("${") != string::npos)
+            die("line " + to_string(lineNo) + ": ${...} is no longer supported; use a bare name or @name");
+        string expanded = applyLoopDiv(expandLine(body, lineNo), loopDiv);
+        out.push_back(expanded + (comment.empty() ? "" : " " + trimStr(comment)));
+        trackAssignment(expanded, lineNo);
     }
     static string codeOf(const string& s) { return trimStr(splitComment(s).first); }
     size_t matchingEnd(const vector<ExpandLine>& in, size_t start, int lineNo) {
@@ -1669,7 +1681,7 @@ struct Expander {
         return cond;
     }
     bool evalCondition(const string& cond, int lineNo) {
-        string c = substVars(cond, vars, lineNo);
+        string c = substNames(cond, vars, lineNo);
         for (char& ch : c) if (ch == ',') ch = '.';
         string n;  // accept "=" and "<>" as comparisons too
         for (size_t i = 0; i < c.size(); i++) {
@@ -1740,7 +1752,7 @@ struct Expander {
             if (body == "\\end{algorithm}") die("line " + to_string(lineNo) + ": unexpected \\end{algorithm}");
             if (startsWithWord(body, "\\endrepeat")) die("line " + to_string(lineNo) + ": unexpected \\endrepeat");
             if (body.compare(0, 17, "\\begin{algorithm}") == 0) {
-                string title = substVars(parseAlgorithm(body, lineNo), vars, lineNo);
+                string title = substAt(parseAlgorithm(body, lineNo), vars, lineNo);
                 size_t bodyStart = i + 1, bodyEnd = matchingAlgorithm(in, bodyStart, lineNo);
                 vector<ExpandLine> bodyLines(in.begin() + bodyStart, in.begin() + bodyEnd);
                 if (!title.empty()) {  // a formula title, not arithmetic
@@ -1748,10 +1760,8 @@ struct Expander {
                     out.push_back(title);
                     out.push_back("\\end{latex}");
                 }
-                auto saved = vars;
                 size_t bi = 0;
                 block(bodyLines, bi, loopDiv);
-                vars = saved;  // an algorithm gets its own variable scope
                 i = bodyEnd + 1;
                 continue;
             }
@@ -1776,12 +1786,14 @@ struct Expander {
                 auto old = vars.find(h.var);
                 bool had = old != vars.end();
                 string saved = had ? old->second : "";
+                loopVars[h.var]++;
                 for (int v = h.start; v <= h.end; v++) {
                     vars[h.var] = to_string(v);
                     int d = h.digits.empty() ? loopDiv : (h.digits.size() == 1 ? h.digits[0] : h.digits[v - h.start]);
                     size_t bi = 0;
                     block(bodyLines, bi, d);
                 }
+                if (--loopVars[h.var] == 0) loopVars.erase(h.var);
                 if (had) vars[h.var] = saved; else vars.erase(h.var);
                 i = bodyEnd + 1;
                 continue;
@@ -2116,8 +2128,11 @@ int main(int argc, char** argv) {
         auto [code, comment] = splitComment(raw);
         string body = trimStr(code);
         if (body.empty()) return;
-        if (!expand && (startsWithWord(body, "\\let") || startsWithWord(body, "\\calc") ||
-                        startsWithWord(body, "\\repeat") || startsWithWord(body, "\\endrepeat") ||
+        if (startsWithWord(body, "\\let") || startsWithWord(body, "\\calc"))
+            die("\\let and \\calc are no longer needed; write an ordinary assignment");
+        if (body.find("${") != string::npos)
+            die("${...} is no longer supported; use a bare name or @name");
+        if (!expand && (startsWithWord(body, "\\repeat") || startsWithWord(body, "\\endrepeat") ||
                         body.compare(0, 3, "\\if") == 0 || body == "\\else" || body == "\\endif" ||
                         body.compare(0, 17, "\\begin{algorithm}") == 0 || body == "\\end{algorithm}"))
             die("this directive requires --expand: " + body);
@@ -2140,8 +2155,7 @@ int main(int argc, char** argv) {
         }
         if (latexMarker(body, "\\begin", env)) { latexBlock = true; latexEnv = env; latexStartLine = lineNo; return; }
         if (latexMarker(body, "\\end", env)) die("unexpected \\end without matching \\begin");
-        bool math = body.find('\\') != string::npos || body.front() == '$' ||
-                    body.find("≈") != string::npos || body.find("≤") != string::npos || body.find("≥") != string::npos;
+        bool math = looksLikeMath(body);
         if (math) {
             string tex = substAt(body, vars, lineNo);
             if (checkOnly) { checkFormula(tex); return; }

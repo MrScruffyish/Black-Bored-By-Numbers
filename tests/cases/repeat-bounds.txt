@@ -1,0 +1,5 @@
+N = 2
+\repeat k = 1..N
+r_@k = k + 10
+$x_@k = @k$
+\endrepeat

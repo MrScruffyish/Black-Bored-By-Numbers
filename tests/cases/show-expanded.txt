@@ -1,8 +1,8 @@
-\let N = 2
-\let x = 1
+N = 2
+x = 1
 \repeat k = 1..2 digits 3 5
-\calc q = ${N} / ${x}
-\calc s = ${x} + ${q}
-\calc x = ${s} / 2 label=x
-$x_${k} = ${x}$
+q = N / x
+s = x + q
+x = s / 2
+$x_@k = @x$
 \endrepeat

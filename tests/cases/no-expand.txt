@@ -1,1 +1,1 @@
-\let N = 1
+\repeat k = 1..2

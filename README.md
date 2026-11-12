@@ -53,12 +53,12 @@ example:
 
 - `--dry` parses the input and verifies the arithmetic without rendering.
 - `--expand` enables the small algorithm preprocessor described under
-  "Algorithms and the expander". Without it, `\let`, `\calc`, `\repeat`,
-  `\if` and `\begin{algorithm}` are not interpreted.
+  "Algorithms and the expander". Without it, `\repeat`, `\if` and
+  `\begin{algorithm}` are not interpreted.
 - `--show-expanded` implies `--expand` and prints the expanded input lines to
   stdout, one per line, then exits without rendering. This is useful for seeing
-  what `\let`, `\calc`, `\repeat`, `\if` and `${...}` produced. It cannot be
-  combined with `--only-show-results`.
+  what `\repeat`, `\if` and the other expander directives produced. It cannot
+  be combined with `--only-show-results`.
 - `--syntax-check` parses the input and reports every problem it finds, one per
   line, prefixed with the line number. It prints `syntax OK: N lines` and exits
   with status 0 when the file is valid, or lists the issues and exits with
@@ -417,66 +417,51 @@ lines before anything is rendered. The directives are textual, so the normal
 parser still checks every arithmetic line. A `#` comment may follow any
 directive; it is ignored by the expander.
 
-`\let NAME = VALUE` defines a numeric variable. `VALUE` may use either decimal
-separator and may contain `${NAME}` references. Values are stored without
-thousand separators and with a decimal comma. `${NAME}` substitutes a variable
-anywhere in a later line, including inside math formulas. The `$` in `${...}`
-is independent of the `$...$` math delimiters: `$N = ${N}$` expands to
-`$N = 2$` before the formula is parsed.
-
-`\calc [NAME =] EXPR [label=VAR] [\meta ...]` renders one arithmetic line and
-stores its result as a variable. `EXPR` may use the same operators, parentheses
-and multiple operations as an ordinary line. The left-hand side `NAME` is what
-appears on the board and, by default, is also the variable name. `label=VAR`
-stores the result under `VAR` instead. That is needed when the displayed name is
-not a plain variable name (for example a subscript such as `x_{k+1}`) or when
-there is no shown name at all:
+Ordinary assignments work as everywhere else, and the expander remembers them
+so that `\if` conditions and `\repeat` bounds can use them. Inside formula text,
+put `@` before a name to substitute its value; in arithmetic lines the bare name
+is enough. The value stored is the displayed, already-truncated result, so later
+references see exactly what the viewer saw:
 
 ```text
-\calc x_{k+1} = ${s} / 2 label=x    # shows x_{k+1}, stores x
-\calc 10 + 5 label=total            # shows 10 + 5, stores total
-```
-
-`label=` and `\meta` may appear in either order, and two `label=` clauses on
-one line are an error. The stored value is the displayed, already-truncated
-result, so later `${...}` references see exactly what the viewer saw. For
-example:
-
-```text
-\let N = 2
-\let x = 1
-\calc q = ${N} / ${x} \meta div_digits=2
-\calc s = ${x} + ${q}
-\calc x = ${s} / 2 label=x
-$x_1 = ${x}$
+N = 2
+x = 1
+q = N / x \meta div_digits=2
+s = x + q
+x = s / 2
+$x_1 = @x$
 ```
 
 `\repeat VAR = START..END [digits d1 d2 ...] ... \endrepeat` repeats a block.
-`${VAR}` is the current iteration number. The optional digit list sets
-`div_digits` for division lines in that iteration (one value for all
-iterations, or one per iteration); an explicit `\meta div_digits=N` on a line
-still wins. The loop variable is restored after the loop.
+`START` and `END` may be integers or names of variables that already have a
+value. `VAR` is the current iteration number. In arithmetic lines the bare name
+`VAR` is replaced by that number; in formula text use `@VAR` (or `@{...}`). The
+optional digit list sets `div_digits` for division lines in that iteration (one
+value for all iterations, or one per iteration); an explicit
+`\meta div_digits=N` on a line still wins. The loop variable is restored after
+the loop.
 
 `\if{CONDITION} ... \else ... \endif` chooses a block at expansion time. The
 condition is a numeric comparison evaluated with `bc`; both `,` and `.` work as
 the decimal separator, and the usual operators `< <= > >= == !=` (also `=` and
-`<>`) are available. Blocks may be nested.
+`<>`) are available. Conditions may use variable names directly. Blocks may be
+nested.
 
 `\begin{algorithm}{TITLE} ... \end{algorithm}` renders `TITLE` as a formula
-scene and gives the body its own variable scope: variables defined or changed
-inside do not leak out. The title is optional.
+scene. The title may contain `@name` substitutions. Variables are global: an
+assignment inside an algorithm is visible afterwards. The title is optional.
 
 A complete Newton–Raphson example:
 
 ```text
-\let N = 2
-\let x = 1
-\begin{algorithm}{Newton-Raphson for ${N}}
+N = 2
+x = 1
+\begin{algorithm}{Newton-Raphson for @N}
 \repeat k = 1..4 digits 2 4 8 16
-\calc q = ${N} / ${x}
-\calc s = ${x} + ${q}
-\calc x = ${s} / 2 label=x
-$x_${k} = ${x}$
+q = N / x
+s = x + q
+x = s / 2
+$x_@k = @x$
 \endrepeat
 \end{algorithm}
 ```
@@ -485,6 +470,9 @@ Run it with `./board examples-expand.txt out.mp4 --expand`. With
 `--only-show-results --expand`, the expanded arithmetic lines print their
 numeric results and formula lines print unchanged (the algorithm title is a
 formula line).
+
+The older `\let`, `\calc` and `${...}` forms are no longer supported: write an
+ordinary assignment and use a bare name or `@name` instead.
 
 See `examples.txt` for a complete tour of the input language (run it with
 `--expand`) and `examples-expand.txt` for the Newton–Raphson example on its

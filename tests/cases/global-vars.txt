@@ -1,5 +1,5 @@
 \begin{algorithm}{T}
-\let N = 7
-$N = ${N}$
+N = 7
+$N = @N$
 \end{algorithm}
-$N = ${N}$
+N

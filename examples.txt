@@ -50,6 +50,7 @@ s_3
 0,0012 * 0,0012
 
 # --- Meta commands ---
+1 / 3 \meta div_digits=10
 x = 1 / 3 \meta div_digits=10
 
 # --- Square roots ---
@@ -76,39 +77,42 @@ a_@k = 5
 a_@k
 
 # --- Algorithms and the expander (requires --expand) ---
-\let N = 2
-\let x = 1
-\calc q = ${N} / ${x} \meta div_digits=2
-\calc s = ${x} + ${q}
-\calc x = ${s} / 2 label=x
-$x_1 = ${x}$
+# Ordinary assignments are remembered by the expander.
+N = 2
+x = 1
+q = N / x \meta div_digits=2
+s = x + q
+x = s / 2
+$x_1 = @x$
 
-# A compound \calc line, with a subscripted display name and a plain store name.
-\calc x_{k+1} = (${x} + ${N} / ${x}) / 2 label=x
-$x_1 = ${x}$
-\calc 10 + 5 label=total
-$total = ${total}$
+# A compound expression in one line.
+x = (x + N / x) / 2
+$x_1 = @x$
 
-# Repeat with per-iteration division precision.
+# A calculation without a variable still shows its result.
+10 + 5
+
+# Repeat with per-iteration division precision. In arithmetic lines the
+# loop variable is a bare name; in formula text use @k.
 \repeat k = 1..3 digits 2 4 8
-\calc q = ${N} / ${x}
-\calc x = (${x} + ${q}) / 2 label=x
-$x_${k} = ${x}$
+q = N / x
+x = (x + q) / 2
+$x_@k = @x$
 \endrepeat
 
 # Conditional block.
-\if{${N} > 1}
-$N$ is greater than one
+\if{N > 1}
+$N > 1$
 \else
-$N$ is not greater than one
+$N \le 1$
 \endif
 
-# Algorithm scope and title.
-\begin{algorithm}{Newton-Raphson for ${N}}
+# Algorithm title and global variables.
+\begin{algorithm}{Newton-Raphson for @N}
 \repeat k = 1..4 digits 2 4 8 16
-\calc q = ${N} / ${x}
-\calc s = ${x} + ${q}
-\calc x = ${s} / 2 label=x
-$x_${k} = ${x}$
+q = N / x
+s = x + q
+x = s / 2
+$x_@k = @x$
 \endrepeat
 \end{algorithm}

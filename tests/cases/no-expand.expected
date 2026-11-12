@@ -1,1 +1,1 @@
-error: this directive requires --expand: \let N = 1
+error: this directive requires --expand: \repeat k = 1..2
