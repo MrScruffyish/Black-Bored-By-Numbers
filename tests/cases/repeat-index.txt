@@ -1,0 +1,8 @@
+N = 2
+z_0 = 0
+\repeat k = 0..2
+z_{k+1} = z_k + 1
+x_{k+1} = \frac{1}{2}\left(x_k+\frac{N}{x_k}\right)
+$y_{@k+1} = y_@k + 1$
+$w_{n+1}$
+\endrepeat

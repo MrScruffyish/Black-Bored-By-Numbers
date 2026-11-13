@@ -1618,8 +1618,72 @@ struct Expander {
         }
         return r;
     }
-    // @name is substituted everywhere; bare loop variables are substituted in
-    // arithmetic lines only, because LaTeX text is literal.
+    // Formula text keeps its indices literal, but a loop variable is still
+    // substituted inside an index and plain index arithmetic is evaluated.
+    // Thus x_{k+1} becomes x_3 when k is 2, not x_{2+1}.
+    string evalIndices(const string& s, int lineNo) {
+        string out;
+        size_t i = 0;
+        while (i < s.size()) {
+            if (!isalpha((unsigned char)s[i])) { out += s[i++]; continue; }
+            size_t start = i;
+            while (i < s.size() && isalnum((unsigned char)s[i])) i++;
+            string base = s.substr(start, i - start);
+            if (i >= s.size() || s[i] != '_') { out += base; continue; }
+            i++;
+            bool braced = false;
+            string idx;
+            size_t end;
+            if (i < s.size() && s[i] == '{') {
+                braced = true;
+                int depth = 1; size_t j = i + 1;
+                while (j < s.size() && depth) {
+                    if (s[j] == '{') depth++;
+                    else if (s[j] == '}') depth--;
+                    if (depth) j++;
+                }
+                if (depth) { out += s.substr(start); break; }  // unmatched brace: keep the rest
+                idx = trimStr(s.substr(i + 1, j - (i + 1)));
+                end = j + 1;
+            } else {
+                size_t b = i;
+                while (i < s.size() && isalnum((unsigned char)s[i])) i++;
+                if (i == b) { out += s.substr(start, i - start); continue; }  // "x_" is not a name
+                idx = s.substr(b, i - b);
+                end = i;
+            }
+            if (idx.empty()) { out += s.substr(start, end - start); i = end; continue; }
+            string sub = idx;
+            for (auto& [name, depth] : loopVars)
+                sub = replaceBare(sub, name, vars[name]);
+            bool numeric = !sub.empty();
+            for (char c : sub) {
+                if (!(isdigit((unsigned char)c) || isspace((unsigned char)c) ||
+                      c == '+' || c == '-' || c == '*' || c == '/' ||
+                      c == '(' || c == ')' || c == '.' || c == ',')) { numeric = false; break; }
+            }
+            if (numeric && !(allDigitsText(sub) && sub.size() > 1 && sub[0] == '0')) {
+                try {
+                    string val = evalIndexToString(sub, vars, true, lineNo);
+                    out += base + "_" + val;
+                    i = end;
+                    continue;
+                } catch (const BoardError&) {
+                    // Keep the literal index; the main parser reports real errors.
+                }
+            }
+            if (sub != idx) {
+                out += base + "_";
+                out += braced ? "{" + sub + "}" : sub;
+            } else {
+                out += s.substr(start, end - start);
+            }
+            i = end;
+        }
+        return out;
+    }
+    // @name is substituted everywhere.  Bare loop variables are substituted in
+    // arithmetic lines; in formula text they are substituted inside indices.
     string expandLine(const string& body, int lineNo) {
         string r = substAt(body, vars, lineNo);
         string check = body;
@@ -1632,7 +1696,7 @@ struct Expander {
                 code = replaceBare(code, name, vars[name]);
             r = code + suffix;
         }
-        return r;
+        return evalIndices(r, lineNo);
     }
     // Remember ordinary assignments so that \if conditions and \repeat bounds
     // can use them.  The main parser stores the same values again for display.

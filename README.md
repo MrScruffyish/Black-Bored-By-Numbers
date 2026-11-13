@@ -382,6 +382,11 @@ an integer, otherwise the line is an error. A symbolic index such as `i+1`
 stays literal and is rendered with LaTeX. Write `@` to force evaluation, for
 example `s_@{i+1}`.
 
+An index made only of arithmetic is evaluated even in formula text, so
+`$x_{2+1}$` renders as `x_3`. Inside `\repeat`, the loop variable is
+substituted in indices too, so `x_{k+1}` becomes `x_3` when `k = 2`;
+`x_{@k+1}` evaluates the whole index in the same way.
+
 ## LaTeX
 
 Lines wrapped in `$...$`, or containing a LaTeX command (a backslash) or a
@@ -461,11 +466,12 @@ $x_1 = @x$
 `\repeat VAR = START..END [digits d1 d2 ...] ... \endrepeat` repeats a block.
 `START` and `END` may be integers or names of variables that already have a
 value. `VAR` is the current iteration number. In arithmetic lines the bare name
-`VAR` is replaced by that number; in formula text use `@VAR` (or `@{...}`). The
-optional digit list sets `div_digits` for division lines in that iteration (one
-value for all iterations, or one per iteration); an explicit
-`\meta div_digits=N` on a line still wins. The loop variable is restored after
-the loop.
+`VAR` is replaced by that number. In formula text it is substituted inside
+indices, so `x_{k+1}` becomes `x_3` when `k = 2`; elsewhere in formula text use
+`@VAR` (or `@{...}`). The optional digit list sets `div_digits` for division
+lines in that iteration (one value for all iterations, or one per iteration);
+an explicit `\meta div_digits=N` on a line still wins. The loop variable is
+restored after the loop.
 
 `\if{CONDITION} ... \else ... \endif` chooses a block at expansion time. The
 condition is a numeric comparison evaluated with `bc`; both `,` and `.` work as
@@ -477,25 +483,28 @@ nested.
 scene. The title may contain `@name` substitutions. Variables are global: an
 assignment inside an algorithm is visible afterwards. The title is optional.
 
-A complete Newton–Raphson example:
+A complete Newton–Raphson square-root of 2 example:
 
 ```text
+$Newton-Raphson$
+$Quadratic convergence: the number of significant digits doubles in each step$
+$Given N, x_0   x_{n+1} = \frac{1}{2}\left(x_n + \frac{N}{x_n}\right)$
+
 N = 2
-x = 1
+x_0 = 1
+
 \begin{algorithm}{Newton-Raphson for @N}
-\repeat k = 1..4 digits 2 4 8 16
-q = N / x
-s = x + q
-x = s / 2
-$x_@k = @x$
+\repeat k = 0..3
+x_{k+1} = \frac{1}{2}\left(x_k+\frac{N}{x_k}\right)
 \endrepeat
 \end{algorithm}
 ```
 
-Run it with `./board examples-expand.txt out.mp4 --expand`. With
-`--only-show-results --expand`, the expanded arithmetic lines print their
-numeric results and formula lines print unchanged (the algorithm title is a
-formula line).
+The loop variable is substituted inside the indices, so the four iterations
+are written `x_1`, `x_2`, `x_3` and `x_4`, with `x_0`, `x_1`, ... on the right.
+Run it with `./board newton.txt out.mp4 --expand`. With
+`--only-show-results --expand`, formula lines print as expanded and arithmetic
+lines print their numeric results (the algorithm title is a formula line).
 
 The older `\let`, `\calc` and `${...}` forms are no longer supported: write an
 ordinary assignment and use a bare name or `@name` instead.
