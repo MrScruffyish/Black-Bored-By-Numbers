@@ -1,0 +1,7 @@
+N = 2
+\begin{algorithm}{Display for @N}
+N = 99
+\repeat k = 0..1
+x_{k+1} = x_k + 1
+\end{algorithm}
+$N = @N$

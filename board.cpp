@@ -1537,21 +1537,43 @@ struct RepeatHeader {
     int start = 0, end = 0;
     vector<int> digits;  // optional per-iteration div_digits; one value repeats for all
 };
+static bool isBeginRepeat(const string& b) { return b.compare(0, 14, "\\begin{repeat}") == 0; }
+static bool isEndRepeat(const string& b) { return startsWithWord(b, "\\endrepeat") || b == "\\end{repeat}"; }
+static bool isRepeatStart(const string& b) { return startsWithWord(b, "\\repeat") || isBeginRepeat(b); }
 RepeatHeader parseRepeat(const string& body, int lineNo, const map<string, string>& vars) {
-    string rest = trimStr(body.substr(7));  // \repeat
+    bool env = isBeginRepeat(body);
+    string rest;
+    if (env) {
+        rest = trimStr(body.substr(14));  // \begin{repeat}
+        if (rest.empty() || rest.front() != '{')
+            die("line " + to_string(lineNo) + ": \\begin{repeat} needs {NAME = START..END [digits ...]}");
+        int depth = 0; size_t close = string::npos;
+        for (size_t j = 0; j < rest.size(); j++) {
+            if (rest[j] == '{') depth++;
+            else if (rest[j] == '}' && --depth == 0) { close = j; break; }
+        }
+        if (close == string::npos)
+            die("line " + to_string(lineNo) + ": missing '}' in \\begin{repeat}{...}");
+        if (!trimStr(rest.substr(close + 1)).empty())
+            die("line " + to_string(lineNo) + ": unexpected text after \\begin{repeat}{...}");
+        rest = trimStr(rest.substr(1, close - 1));
+    } else {
+        rest = trimStr(body.substr(7));  // \repeat
+    }
     static const regex re(R"(^([A-Za-z][A-Za-z0-9_]*)\s*=\s*([A-Za-z0-9_]+)\s*\.\.\s*([A-Za-z0-9_]+)\s*(.*)$)");
     smatch m;
     if (!regex_match(rest, m, re))
-        die("line " + to_string(lineNo) + ": \\repeat needs NAME = START..END [digits ...]");
+        die("line " + to_string(lineNo) + ": " + (env ? "\\begin{repeat}" : "\\repeat") +
+            " needs NAME = START..END [digits ...]");
     RepeatHeader h; h.var = m[1];
     h.start = parseCount(substNames(m[2], vars, lineNo), lineNo, "repeat start");
     h.end = parseCount(substNames(m[3], vars, lineNo), lineNo, "repeat end");
-    if (h.start > h.end) die("line " + to_string(lineNo) + ": \\repeat start is after its end");
+    if (h.start > h.end) die("line " + to_string(lineNo) + ": repeat start is after its end");
     string tail = trimStr(m[4]);
     if (!tail.empty()) {
         if (startsWithWord(tail, "digits")) tail = trimStr(tail.substr(6));
         if (!tail.empty() && tail.front() == '[') {
-            if (tail.back() != ']') die("line " + to_string(lineNo) + ": missing ']' in \\repeat digits");
+            if (tail.back() != ']') die("line " + to_string(lineNo) + ": missing ']' in repeat digits");
             tail = trimStr(tail.substr(1, tail.size() - 2));
         }
         string cur;
@@ -1566,7 +1588,7 @@ RepeatHeader parseRepeat(const string& body, int lineNo, const map<string, strin
     }
     int count = h.end - h.start + 1;
     if (!h.digits.empty() && h.digits.size() != 1 && (int)h.digits.size() != count)
-        die("line " + to_string(lineNo) + ": \\repeat has " + to_string(h.digits.size()) +
+        die("line " + to_string(lineNo) + ": repeat has " + to_string(h.digits.size()) +
             " digit counts for " + to_string(count) + " iterations");
     return h;
 }
@@ -1737,10 +1759,10 @@ struct Expander {
         for (size_t j = start; j < in.size(); j++) {
             string b = codeOf(in[j].text);
             if (b.empty()) continue;
-            if (startsWithWord(b, "\\repeat")) depth++;
-            else if (startsWithWord(b, "\\endrepeat") && --depth == 0) return j;
+            if (isRepeatStart(b)) depth++;
+            else if (isEndRepeat(b) && --depth == 0) return j;
         }
-        die("line " + to_string(lineNo) + ": \\repeat without matching \\endrepeat");
+        die("line " + to_string(lineNo) + ": repeat without matching \\endrepeat or \\end{repeat}");
         return in.size();
     }
     string parseIf(const string& body, int lineNo) {
@@ -1829,18 +1851,25 @@ struct Expander {
             if (body == "\\else") die("line " + to_string(lineNo) + ": unexpected \\else");
             if (body == "\\endif") die("line " + to_string(lineNo) + ": unexpected \\endif");
             if (body == "\\end{algorithm}") die("line " + to_string(lineNo) + ": unexpected \\end{algorithm}");
-            if (startsWithWord(body, "\\endrepeat")) die("line " + to_string(lineNo) + ": unexpected \\endrepeat");
+            if (isEndRepeat(body)) die("line " + to_string(lineNo) + ": unexpected " + body);
             if (body.compare(0, 17, "\\begin{algorithm}") == 0) {
                 string title = substAt(parseAlgorithm(body, lineNo), vars, lineNo);
                 size_t bodyStart = i + 1, bodyEnd = matchingAlgorithm(in, bodyStart, lineNo);
-                vector<ExpandLine> bodyLines(in.begin() + bodyStart, in.begin() + bodyEnd);
                 if (!title.empty()) {  // a formula title, not arithmetic
                     out.push_back("\\begin{latex}");
                     out.push_back(title);
                     out.push_back("\\end{latex}");
                 }
-                size_t bi = 0;
-                block(bodyLines, bi, loopDiv);
+                // The algorithm block only displays its body as LaTeX; it is
+                // not expanded, so loops and assignments belong outside it.
+                for (size_t j = bodyStart; j < bodyEnd; j++) {
+                    string line = codeOf(in[j].text);
+                    if (line.empty()) continue;
+                    string tex = evalIndices(substAt(line, vars, in[j].no), in[j].no);
+                    out.push_back("\\begin{latex}");
+                    out.push_back(tex);
+                    out.push_back("\\end{latex}");
+                }
                 i = bodyEnd + 1;
                 continue;
             }
@@ -1858,7 +1887,7 @@ struct Expander {
                 i = parts.endPos + 1;
                 continue;
             }
-            if (startsWithWord(body, "\\repeat")) {
+            if (isRepeatStart(body)) {
                 RepeatHeader h = parseRepeat(body, lineNo, vars);
                 size_t bodyStart = i + 1, bodyEnd = matchingEnd(in, bodyStart, lineNo);
                 vector<ExpandLine> bodyLines(in.begin() + bodyStart, in.begin() + bodyEnd);
@@ -2232,6 +2261,7 @@ int main(int argc, char** argv) {
         if (body.find("${") != string::npos)
             die("${...} is no longer supported; use a bare name or @name");
         if (!expand && (startsWithWord(body, "\\repeat") || startsWithWord(body, "\\endrepeat") ||
+                        body.compare(0, 14, "\\begin{repeat}") == 0 || body == "\\end{repeat}" ||
                         body.compare(0, 3, "\\if") == 0 || body == "\\else" || body == "\\endif" ||
                         body.compare(0, 17, "\\begin{algorithm}") == 0 || body == "\\end{algorithm}"))
             die("this directive requires --expand: " + body);

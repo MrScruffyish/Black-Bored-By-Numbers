@@ -1,0 +1,6 @@
+2
+Display for 2
+N = 99
+\repeat k = 0..1
+x_{k+1} = x_k + 1
+$N = 2$

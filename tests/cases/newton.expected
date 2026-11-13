@@ -1,6 +1,7 @@
 2
 1
 Newton-Raphson for 2
+$Given N, x_0   x_{n+1} = \frac{1}{2}\left(x_n+\frac{N}{x_n}\right)$
 2
 3
 1,5

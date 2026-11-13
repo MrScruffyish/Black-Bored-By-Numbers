@@ -1,0 +1,4 @@
+x_0 = 1
+\begin{repeat}{k = 0..2}
+x_{k+1} = x_k + 1
+\end{repeat}

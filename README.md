@@ -53,12 +53,12 @@ example:
 
 - `--dry` parses the input and verifies the arithmetic without rendering.
 - `--expand` enables the small algorithm preprocessor described under
-  "Algorithms and the expander". Without it, `\repeat`, `\if` and
-  `\begin{algorithm}` are not interpreted.
+  "Algorithms and the expander". Without it, `\repeat`, `\begin{repeat}`,
+  `\if` and `\begin{algorithm}` are not interpreted.
 - `--show-expanded` implies `--expand` and prints the expanded input lines to
   stdout, one per line, then exits without rendering. This is useful for seeing
-  what `\repeat`, `\if` and the other expander directives produced. It cannot
-  be combined with `--only-show-results`.
+  what `\repeat`, `\begin{repeat}`, `\if` and the other expander directives
+  produced. It cannot be combined with `--only-show-results`.
 - `--syntax-check` parses the input and reports every problem it finds, one per
   line, prefixed with the line number. It prints `syntax OK: N lines` and exits
   with status 0 when the file is valid, or lists the issues and exits with
@@ -383,7 +383,7 @@ stays literal and is rendered with LaTeX. Write `@` to force evaluation, for
 example `s_@{i+1}`.
 
 An index made only of arithmetic is evaluated even in formula text, so
-`$x_{2+1}$` renders as `x_3`. Inside `\repeat`, the loop variable is
+`$x_{2+1}$` renders as `x_3`. Inside a repeat block, the loop variable is
 substituted in indices too, so `x_{k+1}` becomes `x_3` when `k = 2`;
 `x_{@k+1}` evaluates the whole index in the same way.
 
@@ -449,7 +449,7 @@ parser still checks every arithmetic line. A `#` comment may follow any
 directive; it is ignored by the expander.
 
 Ordinary assignments work as everywhere else, and the expander remembers them
-so that `\if` conditions and `\repeat` bounds can use them. Inside formula text,
+so that `\if` conditions and repeat bounds can use them. Inside formula text,
 put `@` before a name to substitute its value; in arithmetic lines the bare name
 is enough. The value stored is the displayed, already-truncated result, so later
 references see exactly what the viewer saw:
@@ -463,15 +463,17 @@ x = s / 2
 $x_1 = @x$
 ```
 
-`\repeat VAR = START..END [digits d1 d2 ...] ... \endrepeat` repeats a block.
-`START` and `END` may be integers or names of variables that already have a
-value. `VAR` is the current iteration number. In arithmetic lines the bare name
-`VAR` is replaced by that number. In formula text it is substituted inside
-indices, so `x_{k+1}` becomes `x_3` when `k = 2`; elsewhere in formula text use
-`@VAR` (or `@{...}`). The optional digit list sets `div_digits` for division
-lines in that iteration (one value for all iterations, or one per iteration);
-an explicit `\meta div_digits=N` on a line still wins. The loop variable is
-restored after the loop.
+`\begin{repeat}{VAR = START..END [digits d1 d2 ...]} ... \end{repeat}`
+repeats a block. The older
+`\repeat VAR = START..END [digits d1 d2 ...] ... \endrepeat` form is an alias
+with the same header. `START` and `END` may be integers or names of variables
+that already have a value. `VAR` is the current iteration number. In arithmetic
+lines the bare name `VAR` is replaced by that number. In formula text it is
+substituted inside indices, so `x_{k+1}` becomes `x_3` when `k = 2`; elsewhere
+in formula text use `@VAR` (or `@{...}`). The optional digit list sets
+`div_digits` for division lines in that iteration (one value for all iterations,
+or one per iteration); an explicit `\meta div_digits=N` on a line still wins.
+The loop variable is restored after the loop.
 
 `\if{CONDITION} ... \else ... \endif` chooses a block at expansion time. The
 condition is a numeric comparison evaluated with `bc`; both `,` and `.` work as
@@ -479,32 +481,39 @@ the decimal separator, and the usual operators `< <= > >= == !=` (also `=` and
 `<>`) are available. Conditions may use variable names directly. Blocks may be
 nested.
 
-`\begin{algorithm}{TITLE} ... \end{algorithm}` renders `TITLE` as a formula
-scene. The title may contain `@name` substitutions. Variables are global: an
-assignment inside an algorithm is visible afterwards. The title is optional.
+`\begin{algorithm}{TITLE} ... \end{algorithm}` displays an algorithm as LaTeX.
+The title and every body line are rendered as formulas; the body is not
+expanded, so `\repeat`, `\if` and assignments written inside it are shown
+literally instead of being executed. The title may contain `@name`
+substitutions, and the title is optional. Put a `\begin{repeat}` block after
+the algorithm when you want to compute the iterations.
 
 A complete Newton–Raphson square-root of 2 example:
 
 ```text
 $Newton-Raphson$
 $Quadratic convergence: the number of significant digits doubles in each step$
-$Given N, x_0   x_{n+1} = \frac{1}{2}\left(x_n + \frac{N}{x_n}\right)$
+$Given N and x_0, approximate \sqrt{N}$
 
 N = 2
 x_0 = 1
 
 \begin{algorithm}{Newton-Raphson for @N}
-\repeat k = 0..3
-x_{k+1} = \frac{1}{2}\left(x_k+\frac{N}{x_k}\right)
-\endrepeat
+$x_{k+1} = \frac{1}{2}\left(x_k + \frac{N}{x_k}\right)$
 \end{algorithm}
+
+\begin{repeat}{k = 0..3}
+x_{k+1} = (x_k + N / x_k) / 2
+\end{repeat}
 ```
 
-The loop variable is substituted inside the indices, so the four iterations
-are written `x_1`, `x_2`, `x_3` and `x_4`, with `x_0`, `x_1`, ... on the right.
-Run it with `./board newton.txt out.mp4 --expand`. With
-`--only-show-results --expand`, formula lines print as expanded and arithmetic
-lines print their numeric results (the algorithm title is a formula line).
+The algorithm block only displays the recurrence. The repeat block then
+computes the four arithmetic iterations; the loop variable is substituted
+inside the indices, so they are written `x_1`, `x_2`, `x_3` and `x_4`, with
+`x_0`, `x_1`, ... on the right. Run it with
+`./board newton.txt out.mp4 --expand`. With `--only-show-results --expand`,
+formula lines print as expanded and arithmetic lines print their numeric
+results (the algorithm title is a formula line).
 
 The older `\let`, `\calc` and `${...}` forms are no longer supported: write an
 ordinary assignment and use a bare name or `@name` instead.

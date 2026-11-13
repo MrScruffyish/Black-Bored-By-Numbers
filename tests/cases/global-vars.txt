@@ -1,5 +1,6 @@
-\begin{algorithm}{T}
 N = 7
+\begin{algorithm}{T}
+N = 8
 $N = @N$
 \end{algorithm}
 N

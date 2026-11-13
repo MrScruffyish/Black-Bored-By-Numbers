@@ -1,12 +1,10 @@
 # Run with: ./board examples-expand.txt out.mp4 --expand
 # Newton-Raphson square root, doubling the significant digits each step.
 N = 2
-x = 1
+x_0 = 1
 \begin{algorithm}{Newton-Raphson for @N}
-\repeat k = 1..4 digits 2 4 8 16
-q = N / x
-s = x + q
-x = s / 2
-$x_@k = @x$
-\endrepeat
+$x_{k+1} = \frac{1}{2}\left(x_k + \frac{N}{x_k}\right)$
 \end{algorithm}
+\begin{repeat}{k = 0..3}
+x_{k+1} = (x_k + N / x_k) / 2
+\end{repeat}

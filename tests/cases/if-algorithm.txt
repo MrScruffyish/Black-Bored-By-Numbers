@@ -1,5 +1,7 @@
 N = 5
 \begin{algorithm}{Branch test}
+$N = @N$
+\end{algorithm}
 \if{N > 3}
 $big$
 \else
@@ -18,5 +20,4 @@ $two$
 $not two: @k$
 \endif
 \endrepeat
-\end{algorithm}
 $N = @N$
