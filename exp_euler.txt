@@ -1,0 +1,14 @@
+# Run with: ./board exp_euler.txt exp_euler.mp4 --expand
+# Explicit Euler for y' = y, y(0) = 1
+h = 0,1
+x = 0
+y = 1
+\begin{algorithm}{Explicit Euler for y' = y,  y(0) = 1,  h = @h}
+$y_{k+1} = y_k + h \cdot y_k$
+\end{algorithm}
+\begin{repeat}{k = 1..10}
+d = h * y
+y = y + d
+x = x + h
+$x_@k = @x$, y_@k = @y$
+\end{repeat}

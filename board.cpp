@@ -1203,8 +1203,8 @@ Scene divide(const Num& a, const Num& b, const string& op, const string& name, i
     Num A = a; int k = b.dec;  // move the comma k steps right in both numbers
     if (A.dec < k) { A.d.insert(A.d.begin(), k - A.dec, 0); A.dec = 0; } else A.dec -= k;
     while ((int)A.d.size() > A.dec + 1 && !A.d.back()) A.d.pop_back();
-    Num Dv{d, 0, ""};
-    if (k) sc.titleEnd = sc.text(" = " + fmtNum(A) + " " + op + " " + fmtNum(Dv), sc.titleEnd, 30, TITLE, 30);
+    // The shifted integers are only an internal long-division detail; do not
+    // show them as an extra "= 20 / 14" step in the title.
     int nInt = A.d.size() - A.dec, nD = A.d.size();
     int N = max(sigDigits(a), sigDigits(b));  // max significant digits in the operands
     int decCap = divDigits >= 0 ? divDigits      // \meta div_digits=N overrides everything
@@ -1465,10 +1465,10 @@ string computeSqrtValue(const Num& n, int sqrtDigits) {
 // The optional --expand preprocessor turns a few small directives into ordinary
 // input lines.  Variables are the same as in the rest of the language: ordinary
 // assignments are passed through and remembered so that \if conditions and
-// \repeat bounds can use them.  \repeat ... \endrepeat repeats a block
-// (optionally applying a per-iteration div_digits), \if{...} ... \else ...
+// repeat bounds can use them.  \begin{repeat}{...} ... \end{repeat} repeats a
+// block (optionally applying a per-iteration div_digits), \if{...} ... \else ...
 // \endif selects a block after evaluating a numeric comparison with bc, and
-// \begin{algorithm}{title} ... \end{algorithm} adds a formula title.
+// \begin{algorithm}{title} ... \end{algorithm} displays LaTeX.
 const regex ARITH_RE(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?([0-9 .,]*[0-9,.])\s*(\+|-|\*|/)\s*([0-9 .,]*[0-9,.])\s*$)");
 const regex SQRT_RE(R"(^\s*(?:([A-Za-z][A-Za-z0-9]*(?:\s*_\s*(?:\{[^}]*\}|[A-Za-z0-9]+))?)\s*=\s*)?\\sqrt\s*\{\s*([0-9 .,]*[0-9,.])\s*\}\s*$)");
 // A numeric \sqrt line belongs to arithmetic even if its closing brace is
@@ -1497,7 +1497,7 @@ bool startsWithWord(const string& s, const string& w) {
     return s.compare(0, w.size(), w) == 0 && (s.size() == w.size() || isspace((unsigned char)s[w.size()]));
 }
 // Replace bare variable names by their values.  Used for expander-time values
-// such as \if conditions and \repeat bounds, where ${...} used to be needed.
+// such as \if conditions and repeat bounds.
 string substNames(const string& s, const map<string, string>& vars, int lineNo) {
     string r; size_t i = 0;
     while (i < s.size()) {
@@ -1538,33 +1538,25 @@ struct RepeatHeader {
     vector<int> digits;  // optional per-iteration div_digits; one value repeats for all
 };
 static bool isBeginRepeat(const string& b) { return b.compare(0, 14, "\\begin{repeat}") == 0; }
-static bool isEndRepeat(const string& b) { return startsWithWord(b, "\\endrepeat") || b == "\\end{repeat}"; }
-static bool isRepeatStart(const string& b) { return startsWithWord(b, "\\repeat") || isBeginRepeat(b); }
+static bool isEndRepeat(const string& b) { return b == "\\end{repeat}"; }
 RepeatHeader parseRepeat(const string& body, int lineNo, const map<string, string>& vars) {
-    bool env = isBeginRepeat(body);
-    string rest;
-    if (env) {
-        rest = trimStr(body.substr(14));  // \begin{repeat}
-        if (rest.empty() || rest.front() != '{')
-            die("line " + to_string(lineNo) + ": \\begin{repeat} needs {NAME = START..END [digits ...]}");
-        int depth = 0; size_t close = string::npos;
-        for (size_t j = 0; j < rest.size(); j++) {
-            if (rest[j] == '{') depth++;
-            else if (rest[j] == '}' && --depth == 0) { close = j; break; }
-        }
-        if (close == string::npos)
-            die("line " + to_string(lineNo) + ": missing '}' in \\begin{repeat}{...}");
-        if (!trimStr(rest.substr(close + 1)).empty())
-            die("line " + to_string(lineNo) + ": unexpected text after \\begin{repeat}{...}");
-        rest = trimStr(rest.substr(1, close - 1));
-    } else {
-        rest = trimStr(body.substr(7));  // \repeat
+    string rest = trimStr(body.substr(14));  // \begin{repeat}
+    if (rest.empty() || rest.front() != '{')
+        die("line " + to_string(lineNo) + ": \\begin{repeat} needs {NAME = START..END [digits ...]}");
+    int depth = 0; size_t close = string::npos;
+    for (size_t j = 0; j < rest.size(); j++) {
+        if (rest[j] == '{') depth++;
+        else if (rest[j] == '}' && --depth == 0) { close = j; break; }
     }
+    if (close == string::npos)
+        die("line " + to_string(lineNo) + ": missing '}' in \\begin{repeat}{...}");
+    if (!trimStr(rest.substr(close + 1)).empty())
+        die("line " + to_string(lineNo) + ": unexpected text after \\begin{repeat}{...}");
+    rest = trimStr(rest.substr(1, close - 1));
     static const regex re(R"(^([A-Za-z][A-Za-z0-9_]*)\s*=\s*([A-Za-z0-9_]+)\s*\.\.\s*([A-Za-z0-9_]+)\s*(.*)$)");
     smatch m;
     if (!regex_match(rest, m, re))
-        die("line " + to_string(lineNo) + ": " + (env ? "\\begin{repeat}" : "\\repeat") +
-            " needs NAME = START..END [digits ...]");
+        die("line " + to_string(lineNo) + ": \\begin{repeat} needs NAME = START..END [digits ...]");
     RepeatHeader h; h.var = m[1];
     h.start = parseCount(substNames(m[2], vars, lineNo), lineNo, "repeat start");
     h.end = parseCount(substNames(m[3], vars, lineNo), lineNo, "repeat end");
@@ -1594,7 +1586,7 @@ RepeatHeader parseRepeat(const string& body, int lineNo, const map<string, strin
 }
 struct Expander {
     map<string, string> vars;   // values known at expansion time
-    map<string, int> loopVars;  // names currently provided by \repeat
+    map<string, int> loopVars;  // names currently provided by \begin{repeat}
     vector<string> out;
     bool collecting = false;
     vector<pair<int, string>>* issues = nullptr;
@@ -1720,7 +1712,7 @@ struct Expander {
         }
         return evalIndices(r, lineNo);
     }
-    // Remember ordinary assignments so that \if conditions and \repeat bounds
+    // Remember ordinary assignments so that \if conditions and repeat bounds
     // can use them.  The main parser stores the same values again for display.
     void trackAssignment(const string& body, int lineNo) {
         string work = body;
@@ -1745,10 +1737,6 @@ struct Expander {
         auto [codePart, comment] = splitComment(rawBody);
         string body = trimStr(codePart);
         if (body.empty()) return;
-        if (startsWithWord(body, "\\let") || startsWithWord(body, "\\calc"))
-            die("line " + to_string(lineNo) + ": \\let and \\calc are no longer needed; write an ordinary assignment");
-        if (body.find("${") != string::npos)
-            die("line " + to_string(lineNo) + ": ${...} is no longer supported; use a bare name or @name");
         string expanded = applyLoopDiv(expandLine(body, lineNo), loopDiv);
         trackAssignment(expanded, lineNo);
         out.push_back(expanded + (comment.empty() ? "" : " " + trimStr(comment)));
@@ -1759,10 +1747,10 @@ struct Expander {
         for (size_t j = start; j < in.size(); j++) {
             string b = codeOf(in[j].text);
             if (b.empty()) continue;
-            if (isRepeatStart(b)) depth++;
+            if (isBeginRepeat(b)) depth++;
             else if (isEndRepeat(b) && --depth == 0) return j;
         }
-        die("line " + to_string(lineNo) + ": repeat without matching \\endrepeat or \\end{repeat}");
+        die("line " + to_string(lineNo) + ": \\begin{repeat} without matching \\end{repeat}");
         return in.size();
     }
     string parseIf(const string& body, int lineNo) {
@@ -1887,7 +1875,7 @@ struct Expander {
                 i = parts.endPos + 1;
                 continue;
             }
-            if (isRepeatStart(body)) {
+            if (isBeginRepeat(body)) {
                 RepeatHeader h = parseRepeat(body, lineNo, vars);
                 size_t bodyStart = i + 1, bodyEnd = matchingEnd(in, bodyStart, lineNo);
                 vector<ExpandLine> bodyLines(in.begin() + bodyStart, in.begin() + bodyEnd);
@@ -2256,12 +2244,7 @@ int main(int argc, char** argv) {
         auto [code, comment] = splitComment(raw);
         string body = trimStr(code);
         if (body.empty()) return;
-        if (startsWithWord(body, "\\let") || startsWithWord(body, "\\calc"))
-            die("\\let and \\calc are no longer needed; write an ordinary assignment");
-        if (body.find("${") != string::npos)
-            die("${...} is no longer supported; use a bare name or @name");
-        if (!expand && (startsWithWord(body, "\\repeat") || startsWithWord(body, "\\endrepeat") ||
-                        body.compare(0, 14, "\\begin{repeat}") == 0 || body == "\\end{repeat}" ||
+        if (!expand && (body.compare(0, 14, "\\begin{repeat}") == 0 || body == "\\end{repeat}" ||
                         body.compare(0, 3, "\\if") == 0 || body == "\\else" || body == "\\endif" ||
                         body.compare(0, 17, "\\begin{algorithm}") == 0 || body == "\\end{algorithm}"))
             die("this directive requires --expand: " + body);
@@ -2317,11 +2300,8 @@ int main(int argc, char** argv) {
             fprintf(stderr, "ok (sqrt): %.100s\n", body.c_str());
             return;
         }
-        if (body.find("sqrt") != string::npos) {
-            if (body.find("\\sqrt") == string::npos)
-                die("square roots are written \\sqrt{NUMBER} or NAME = \\sqrt{NUMBER}: " + body);
+        if (body.find("\\sqrt") != string::npos)
             die("malformed square root: " + body + "\n  expected \\sqrt{NUMBER} or NAME = \\sqrt{NUMBER}");
-        }
         if (regex_match(body, m, ARITH_RE)) {
             Num a = parse(m[2]), b = parse(m[4]); string op = m[3];
             string name;

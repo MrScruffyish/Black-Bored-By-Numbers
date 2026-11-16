@@ -57,12 +57,12 @@ example:
 
 - `--dry` parses the input and verifies the arithmetic without rendering.
 - `--expand` enables the small algorithm preprocessor described under
-  "Algorithms and the expander". Without it, `\repeat`, `\begin{repeat}`,
-  `\if` and `\begin{algorithm}` are not interpreted.
+  "Algorithms and the expander". Without it, `\begin{repeat}`, `\if` and
+  `\begin{algorithm}` are not interpreted.
 - `--show-expanded` implies `--expand` and prints the expanded input lines to
   stdout, one per line, then exits without rendering. This is useful for seeing
-  what `\repeat`, `\begin{repeat}`, `\if` and the other expander directives
-  produced. It cannot be combined with `--only-show-results`.
+  what `\begin{repeat}`, `\if` and the other expander directives produced. It
+  cannot be combined with `--only-show-results`.
 - `--syntax-check` parses the input and reports every problem it finds, one per
   line, prefixed with the line number. It prints `syntax OK: N lines` and exits
   with status 0 when the file is valid, or lists the issues and exits with
@@ -326,8 +326,7 @@ in full. Digits beyond the limit are truncated, not rounded. A per-line
 \sqrt{152,29} \meta sqrt_digits=6
 ```
 
-The second line gives `12,3405`. Write `\sqrt`, not `sqrt`: the backslash marks
-the special command, exactly as in LaTeX.
+The second line gives `12,3405`.
 
 
 
@@ -468,10 +467,8 @@ $x_1 = @x$
 ```
 
 `\begin{repeat}{VAR = START..END [digits d1 d2 ...]} ... \end{repeat}`
-repeats a block. The older
-`\repeat VAR = START..END [digits d1 d2 ...] ... \endrepeat` form is an alias
-with the same header. `START` and `END` may be integers or names of variables
-that already have a value. `VAR` is the current iteration number. In arithmetic
+repeats a block. `START` and `END` may be integers or names of variables that
+already have a value. `VAR` is the current iteration number. In arithmetic
 lines the bare name `VAR` is replaced by that number. In formula text it is
 substituted inside indices, so `x_{k+1}` becomes `x_3` when `k = 2`; elsewhere
 in formula text use `@VAR` (or `@{...}`). The optional digit list sets
@@ -487,8 +484,8 @@ nested.
 
 `\begin{algorithm}{TITLE} ... \end{algorithm}` displays an algorithm as LaTeX.
 The title and every body line are rendered as formulas; the body is not
-expanded, so `\repeat`, `\if` and assignments written inside it are shown
-literally instead of being executed. The title may contain `@name`
+expanded, so `\begin{repeat}`, `\if` and assignments written inside it are
+shown literally instead of being executed. The title may contain `@name`
 substitutions, and the title is optional. Put a `\begin{repeat}` block after
 the algorithm when you want to compute the iterations.
 
@@ -518,9 +515,6 @@ inside the indices, so they are written `x_1`, `x_2`, `x_3` and `x_4`, with
 `./board newton.txt out.mp4 --expand`. With `--only-show-results --expand`,
 formula lines print as expanded and arithmetic lines print their numeric
 results (the algorithm title is a formula line).
-
-The older `\let`, `\calc` and `${...}` forms are no longer supported: write an
-ordinary assignment and use a bare name or `@name` instead.
 
 See `examples.txt` for a complete tour of the input language (run it with
 `--expand`) and `examples-expand.txt` for the Newton–Raphson example on its

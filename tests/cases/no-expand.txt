@@ -1,1 +1,1 @@
-\repeat k = 1..2
+\begin{algorithm}{T}

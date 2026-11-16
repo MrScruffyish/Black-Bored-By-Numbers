@@ -1,1 +1,1 @@
-error: line 1: repeat without matching \endrepeat or \end{repeat}
+error: line 1: \begin{repeat} without matching \end{repeat}

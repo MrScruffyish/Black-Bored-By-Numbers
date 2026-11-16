@@ -1,0 +1,13 @@
+# Run with: ./board nrlarge.txt out.mp4 --expand
+# Newton-Raphson square root, doubling the significant digits each step.
+N = 2
+x = 1
+\begin{algorithm}{Newton-Raphson for @N}
+$x_{k+1} = \frac{1}{2}\left(x_k + \frac{N}{x_k}\right)$
+\end{algorithm}
+\begin{repeat}{k = 1..10 digits 2 4 8 16 32 64 128 256 512 1024}
+q = N / x
+s = x + q
+x = s / 2
+$x_@k = @x$
+\end{repeat}

@@ -1,8 +1,8 @@
 N = 2
 x = 1
-\repeat k = 1..2 digits 3 5
+\begin{repeat}{k = 1..2 digits 3 5}
 q = N / x
 s = x + q
 x = s / 2
 $x_@k = @x$
-\endrepeat
+\end{repeat}
