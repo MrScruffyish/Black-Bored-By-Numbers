@@ -32,6 +32,10 @@ free fallback (Nimbus Mono PS) is used.
 make
 ```
 
+The `Makefile` is the shortcut for the whole build: it compiles `board` with
+the FreeType and thread flags, `make test` builds it and runs the regression
+tests described below, and `make clean` removes the binary.
+
 ## Usage
 
 ```sh
