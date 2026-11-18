@@ -156,23 +156,23 @@ leaves short scenes at their natural pace and compresses only the operations
 that would otherwise run too long:
 
 ```sh
-./board examples-expand.txt examples-expand.mp4 --expand --max-scene-seconds 10
+./board nrlarge.txt nrlarge.mp4 --expand --max-scene-seconds 10
 ```
 
-For a 10-step Newton-Raphson run with 1024-digit precision, the default cap
-makes a huge difference:
+For `nrlarge.txt` (a 10-step Newton-Raphson run with 1024-digit precision),
+the default cap makes a huge difference:
 
 | Command | Video length |
 | --- | ---: |
-| `--expand` (default cap: 30 s per scene) | 12.9 min |
-| `--expand --max-scene-seconds 20` | 9.8 min |
-| `--expand --max-scene-seconds 10` | 5.9 min |
-| `--expand --max-scene-seconds 0` | 867.7 min |
+| `--expand` (default cap: 30 s per scene) | 13.6 min |
+| `--expand --max-scene-seconds 20` | 10.4 min |
+| `--expand --max-scene-seconds 10` | 6.3 min |
+| `--expand --max-scene-seconds 0` | 869.1 min |
 
 Use `--stats` to see where the time goes before rendering:
 
 ```sh
-./board examples-expand.txt --expand --stats
+./board nrlarge.txt --expand --stats
 ```
 
 It prints one row per scene and exits without rendering or needing an output
@@ -180,7 +180,7 @@ file. A very long division can produce a row like this:
 
 ```text
 scene  strokes     raw s     zoom    boost   final s
-   37   949153 301851.60   394.38 10061.72     30.00  q
+   40   949668 301889.43   394.68 10062.98     30.00  q
 ```
 
 `raw s` is the scene's natural duration, `boost` is the per-scene speed-up, and
@@ -189,7 +189,7 @@ scene  strokes     raw s     zoom    boost   final s
 To target a specific total length instead, use `--minutes`:
 
 ```sh
-./board examples-expand.txt examples-expand.mp4 --expand --minutes 5
+./board nrlarge.txt nrlarge.mp4 --expand --minutes 5
 ```
 
 Combine it with `--max-scene-seconds` when you also want a per-scene upper
@@ -512,7 +512,7 @@ The algorithm block only displays the recurrence. The repeat block then
 computes the four arithmetic iterations; the loop variable is substituted
 inside the indices, so they are written `x_1`, `x_2`, `x_3` and `x_4`, with
 `x_0`, `x_1`, ... on the right. Run it with
-`./board newton.txt out.mp4 --expand`. With `--only-show-results --expand`,
+`./board examples-expand.txt out.mp4 --expand`. With `--only-show-results --expand`,
 formula lines print as expanded and arithmetic lines print their numeric
 results (the algorithm title is a formula line).
 

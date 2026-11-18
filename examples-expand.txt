@@ -1,10 +1,16 @@
 # Run with: ./board examples-expand.txt out.mp4 --expand
 # Newton-Raphson square root, doubling the significant digits each step.
+$Newton-Raphson$
+$Quadratic convergence: the number of significant digits doubles in each step$
+$Given N and x_0, approximate \sqrt{N}$
+
 N = 2
 x_0 = 1
+
 \begin{algorithm}{Newton-Raphson for @N}
 $x_{k+1} = \frac{1}{2}\left(x_k + \frac{N}{x_k}\right)$
 \end{algorithm}
+
 \begin{repeat}{k = 0..3}
 x_{k+1} = (x_k + N / x_k) / 2
 \end{repeat}
