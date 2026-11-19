@@ -151,6 +151,34 @@ There are two levels of control:
 - `--auto-speed`, `--max-auto-speed` and `--max-scene-seconds` act per scene.
   One expanded line (or one input line) is one scene.
 
+The defaults are **not** natural speed: `--auto-speed 0.5` speeds up
+zoomed-out scenes and `--max-scene-seconds 30` caps every scene at 30 seconds.
+To render everything at its natural pace, disable both:
+
+```sh
+./board examples-expand.txt out.mp4 --expand \
+    --auto-speed 0 --max-scene-seconds 0
+```
+
+`--speed 1` on its own only leaves the global multiplier at 1; it does not turn
+off the per-scene boosts.
+
+In short:
+
+| Goal | Options |
+| --- | --- |
+| Natural pace | `--auto-speed 0 --max-scene-seconds 0` |
+| Whole video faster or slower | `--speed S` |
+| Target a specific total length | `--minutes M` |
+| Compress only long scenes | `--max-scene-seconds S` |
+| Compress only zoomed-out scenes | `--auto-speed R --max-auto-speed X` |
+| Inspect per-scene timing | `--stats` |
+
+The per-scene boosts depend on a scene's zoom and duration, not on its position
+in the video. There is no positional or time-varying speed ramp: each scene
+gets one constant boost, and `--speed`/`--minutes` apply uniformly to the whole
+timeline.
+
 For a long algorithm, `--max-scene-seconds` is usually the option you want. It
 leaves short scenes at their natural pace and compresses only the operations
 that would otherwise run too long:
